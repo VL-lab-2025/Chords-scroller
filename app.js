@@ -426,14 +426,14 @@ async function openSettings() {
 async function exportLibrary() {
   const data = await exportAll();
   const json = JSON.stringify(data, null, 2);
-  const name = `songs-scroll-backup-${data.exportedAt.slice(0, 10)}.json`;
+  const name = `chords-backup-${data.exportedAt.slice(0, 10)}.json`;
 
   // On iOS the share sheet is far more reliable than a download link, and it
   // lets the file go straight to Files or iCloud Drive.
   try {
     const file = new File([json], name, { type: 'application/json' });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: 'Songs Scroll backup' });
+      await navigator.share({ files: [file], title: 'Chords backup' });
       return;
     }
   } catch (err) {

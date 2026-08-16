@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Songs Scroll</title>
+<title>Chords</title>
 <!-- viewport-fit=cover so we can paint under the notch / Dynamic Island and
      then inset the content ourselves with env(safe-area-inset-*). -->
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -11,7 +11,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Songs">
+<!-- Home-screen label on iOS. Captured when the user taps Add to Home Screen
+     and never updated afterwards, so an existing icon keeps its old name. -->
+<meta name="apple-mobile-web-app-title" content="Chords">
 <!-- All paths relative: this must work from a GitHub Pages subdirectory. -->
 <link rel="manifest" href="./manifest.json">
 <link rel="apple-touch-icon" href="./icons/icon-180.png">
@@ -259,7 +261,7 @@
       <p class="section-heading">About</p>
       <p id="storage-info" class="hint"></p>
       <p id="wakelock-info" class="hint"></p>
-      <p class="hint">Songs Scroll <span id="app-version"></span> — works fully offline.</p>
+      <p class="hint">Chords <span id="app-version"></span> — works fully offline.</p>
       <button id="btn-update" class="btn ghost">Check for app update</button>
     </div>
   </div>

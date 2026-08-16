@@ -3,6 +3,9 @@
 // Everything lives on the phone. There is no server and no account; the export
 // file is the only way data leaves the device, and the only way it comes back.
 
+// Storage identifier, not a display name — never rename it to match the app's
+// title. Changing it opens a different, empty database and every song already
+// saved on the device becomes unreachable.
 const DB_NAME = 'songs-scroll';
 const DB_VERSION = 1;
 const SONGS = 'songs';
@@ -126,6 +129,8 @@ export function savePrefs(prefs) {
 export async function exportAll() {
   const [songs, setlists, prefs] = await Promise.all([getSongs(), getSetlists(), getPrefs()]);
   return {
+    // File-format tag, checked on import. Renaming it would make every backup
+    // exported before the change unreadable.
     app: 'songs-scroll',
     version: 1,
     exportedAt: new Date().toISOString(),
@@ -142,7 +147,7 @@ export async function exportAll() {
  */
 export async function importAll(data, mode = 'merge') {
   if (!data || data.app !== 'songs-scroll' || !Array.isArray(data.songs)) {
-    throw new Error('That file is not a Songs Scroll backup.');
+    throw new Error('That file is not a Chords backup.');
   }
   const db = await openDb();
 

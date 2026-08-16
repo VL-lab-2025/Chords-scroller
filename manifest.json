@@ -1,6 +1,6 @@
 {
-  "name": "Songs Scroll",
-  "short_name": "Songs",
+  "name": "Chords",
+  "short_name": "Chords",
   "description": "Offline autoscrolling chord charts for guitar.",
   "start_url": "./",
   "scope": "./",

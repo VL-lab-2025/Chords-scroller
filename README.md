@@ -1,4 +1,4 @@
-# Songs Scroll
+# Chords
 
 An offline autoscrolling chord-chart reader for guitar, built as a PWA so it runs
 entirely on an iPhone — no server, no account, no PC left switched on.
@@ -82,12 +82,21 @@ app updates itself.
 **One rule:** whenever you change any file, bump the version in `sw.js`:
 
 ```js
-const CACHE = 'songs-scroll-v2';   // -> v3, v4, ...
+const CACHE = 'songs-scroll-v3';   // -> v4, v5, ...
 ```
 
 That string is what tells installed phones their cached copy is stale. Without
 bumping it they keep serving the old files from disk. On the next launch the app
 notices the new version, refreshes itself and reloads once.
+
+**Renaming the app** means changing the display strings only: `<title>` and
+`apple-mobile-web-app-title` in `index.html`, and `name` / `short_name` in
+`manifest.json`. Leave `DB_NAME` in `store.js` and the `app:` tag in the backup
+format alone — they read like the app's name but are storage and file-format
+identifiers. Renaming `DB_NAME` opens a different, empty database and hides
+every song already on the phone. The iOS home-screen label is also captured at
+install time, so an already-installed icon keeps its old name until you delete
+and re-add it.
 
 ## Development
 
