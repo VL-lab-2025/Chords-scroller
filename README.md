@@ -8,17 +8,18 @@ works in airplane mode forever.
 
 ## Deploy to GitHub Pages
 
-You only need to do this once. No command line required.
+Published from [VL-lab-2025/Chords-scroller](https://github.com/VL-lab-2025/Chords-scroller)
+to **https://vl-lab-2025.github.io/Chords-scroller/**
 
-1. Create a new **public** repo on github.com (e.g. `songs-scroll`).
-   Pages is free for public repos; the repo holds only app code — your songs
-   never leave the phone, so nothing personal is published.
-2. Upload every file from this folder (drag and drop into the repo's web UI, or
-   push with git).
-3. Repo **Settings → Pages** → Source: *Deploy from a branch* → Branch: `main`,
+Turning Pages on is a one-time step in the repo's own settings:
+
+1. **Settings → Pages** → Source: *Deploy from a branch* → Branch: `main`,
    folder `/ (root)` → **Save**.
-4. Wait ~1 minute. Your app is at
-   `https://<your-username>.github.io/songs-scroll/`
+2. Wait ~1 minute for the first build, then open the URL above.
+
+The repo must stay **public** for Pages to be free. That is fine here: it holds
+only app code. Songs are stored on the phone and are never committed, so
+nothing personal is published.
 
 ### Put it on the iPhone
 
@@ -94,8 +95,9 @@ notices the new version, refreshes itself and reloads once.
 node dev-server.mjs
 ```
 
-Then open `http://localhost:5173/songs-scroll/`. It deliberately serves from a
-subdirectory to match GitHub Pages, so path mistakes surface locally.
+Then open `http://localhost:5173/Chords-scroller/`. It deliberately serves from
+the same subdirectory GitHub Pages uses, so path mistakes surface locally
+instead of after deploying.
 
 ```bash
 npm test

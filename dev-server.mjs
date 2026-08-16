@@ -9,7 +9,8 @@ import { extname, join, normalize, sep, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
-const MOUNT = '/songs-scroll';
+// Matches the GitHub Pages path (/<repo>/) so local runs hit the same subpath.
+const MOUNT = '/Chords-scroller';
 const PORT = Number(process.env.PORT || 5173);
 
 const TYPES = {
