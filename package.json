@@ -1,0 +1,10 @@
+{
+  "name": "songs-scroll",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Offline PWA for autoscrolling guitar chord charts on iPhone",
+  "scripts": {
+    "test": "node test-model.mjs && node test-player.mjs"
+  }
+}

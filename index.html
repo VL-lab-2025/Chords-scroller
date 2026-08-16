@@ -1,0 +1,272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Songs Scroll</title>
+<!-- viewport-fit=cover so we can paint under the notch / Dynamic Island and
+     then inset the content ourselves with env(safe-area-inset-*). -->
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1115">
+<meta name="description" content="Offline autoscrolling chord charts for guitar.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Songs">
+<!-- All paths relative: this must work from a GitHub Pages subdirectory. -->
+<link rel="manifest" href="./manifest.json">
+<link rel="apple-touch-icon" href="./icons/icon-180.png">
+<link rel="icon" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+
+<!-- ===================== Library ===================== -->
+<section id="view-library" class="view active">
+  <header class="bar">
+    <h1>Songs</h1>
+    <div class="bar-actions">
+      <button id="btn-settings" class="icon-btn" aria-label="Settings">⚙</button>
+      <button id="btn-new-song" class="icon-btn primary" aria-label="Add song">＋</button>
+    </div>
+  </header>
+
+  <div class="tabs" role="tablist">
+    <button class="tab active" data-tab="songs" role="tab">Songs</button>
+    <button class="tab" data-tab="setlists" role="tab">Setlists</button>
+  </div>
+
+  <div id="pane-songs" class="pane active">
+    <input id="search" class="search" type="search" placeholder="Search songs or artists" autocomplete="off">
+    <ul id="song-list" class="list"></ul>
+    <div id="songs-empty" class="empty hidden">
+      <p class="empty-title">No songs yet</p>
+      <p>Add a song, then paste a chord chart into it. Plain charts and ChordPro both work.</p>
+      <button id="btn-example" class="btn ghost">Load an example</button>
+    </div>
+  </div>
+
+  <div id="pane-setlists" class="pane">
+    <ul id="setlist-list" class="list"></ul>
+    <div class="pane-actions">
+      <button id="btn-new-setlist" class="btn ghost">New setlist</button>
+    </div>
+    <div id="setlists-empty" class="empty hidden">
+      <p class="empty-title">No setlists yet</p>
+      <p>Group songs into an ordered set so you can move straight from one to the next.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== Song detail ===================== -->
+<section id="view-song" class="view">
+  <header class="bar">
+    <button class="icon-btn back" data-back="library" aria-label="Back">‹</button>
+    <div class="bar-title">
+      <h2 id="song-title">Song</h2>
+      <p id="song-artist" class="sub"></p>
+    </div>
+    <div class="bar-actions">
+      <button id="btn-edit-song" class="icon-btn" aria-label="Edit song">✎</button>
+    </div>
+  </header>
+
+  <div class="scroll-body">
+    <div id="key-readout" class="readout"></div>
+
+    <div class="control-group">
+      <label class="control">
+        <span class="control-label">Scroll speed <b id="v-speed"></b></span>
+        <input id="c-speed" type="range" min="4" max="120" step="1">
+      </label>
+
+      <label class="control">
+        <span class="control-label">Font size <b id="v-font"></b></span>
+        <input id="c-font" type="range" min="12" max="44" step="1">
+      </label>
+
+      <label class="control">
+        <span class="control-label">Line spacing <b id="v-lh"></b></span>
+        <input id="c-lh" type="range" min="120" max="280" step="5">
+      </label>
+
+      <div class="control stepper-row">
+        <span class="control-label">Transpose <b id="v-transpose"></b></span>
+        <div class="stepper">
+          <button data-step="transpose" data-delta="-1">−</button>
+          <button data-step="transpose" data-delta="1">＋</button>
+        </div>
+      </div>
+
+      <div class="control stepper-row">
+        <span class="control-label">Capo <b id="v-capo"></b></span>
+        <div class="stepper">
+          <button data-step="capo" data-delta="-1">−</button>
+          <button data-step="capo" data-delta="1">＋</button>
+        </div>
+      </div>
+
+      <div class="control stepper-row">
+        <span class="control-label">Lead-in <b id="v-leadin"></b></span>
+        <div class="stepper">
+          <button data-step="leadIn" data-delta="-1">−</button>
+          <button data-step="leadIn" data-delta="1">＋</button>
+        </div>
+      </div>
+
+      <div class="control seg-row">
+        <span class="control-label">Accidentals</span>
+        <div class="segmented" id="c-accidentals">
+          <button data-acc="auto" class="active">Auto</button>
+          <button data-acc="flat">♭</button>
+          <button data-acc="sharp">♯</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="chord-inventory" class="inventory"></div>
+
+    <div class="preview-wrap">
+      <p class="section-heading">Preview</p>
+      <div id="song-preview" class="chart preview"></div>
+    </div>
+
+    <div class="danger-zone">
+      <button id="btn-delete-song" class="btn danger">Delete song</button>
+    </div>
+  </div>
+
+  <div class="footer-bar">
+    <button id="btn-play" class="btn play">▶ Start scrolling</button>
+  </div>
+</section>
+
+<!-- ===================== Editor ===================== -->
+<section id="view-editor" class="view">
+  <header class="bar">
+    <button class="icon-btn back" data-back="song" aria-label="Cancel">‹</button>
+    <div class="bar-title"><h2>Edit song</h2></div>
+    <div class="bar-actions">
+      <button id="btn-save-song" class="btn small primary">Save</button>
+    </div>
+  </header>
+
+  <div class="scroll-body">
+    <label class="field"><span>Title</span><input id="f-title" type="text" placeholder="Song title" autocomplete="off"></label>
+    <label class="field"><span>Artist</span><input id="f-artist" type="text" placeholder="Artist" autocomplete="off"></label>
+    <label class="field"><span>Key <i>(optional — improves ♯/♭ spelling)</i></span><input id="f-key" type="text" placeholder="e.g. Am, G, Bbm" autocomplete="off"></label>
+
+    <label class="field">
+      <span>Chords &amp; lyrics <b id="format-badge" class="badge"></b></span>
+      <textarea id="f-body" spellcheck="false" autocapitalize="off" autocorrect="off"
+        placeholder="Paste a chord chart here.&#10;&#10;Am        F&#10;Some lyric line here&#10;&#10;— or ChordPro —&#10;&#10;[Am]Some [F]lyric line here"></textarea>
+    </label>
+    <p class="hint">Format is detected automatically. Plain charts keep chords on the line above; ChordPro puts them inline in square brackets.</p>
+  </div>
+</section>
+
+<!-- ===================== Setlist detail ===================== -->
+<section id="view-setlist" class="view">
+  <header class="bar">
+    <button class="icon-btn back" data-back="library" aria-label="Back">‹</button>
+    <div class="bar-title"><h2 id="setlist-title">Setlist</h2></div>
+    <div class="bar-actions">
+      <button id="btn-rename-setlist" class="icon-btn" aria-label="Rename">✎</button>
+    </div>
+  </header>
+
+  <div class="scroll-body">
+    <p class="section-heading">In this set</p>
+    <ul id="setlist-songs" class="list reorderable"></ul>
+    <p id="setlist-empty" class="hint">Nothing in this set yet — add songs below.</p>
+
+    <p class="section-heading">Add a song</p>
+    <ul id="setlist-available" class="list"></ul>
+
+    <div class="danger-zone">
+      <button id="btn-delete-setlist" class="btn danger">Delete setlist</button>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== Player ===================== -->
+<section id="view-player" class="view player">
+  <div id="player-viewport" class="player-viewport">
+    <div id="player-content" class="chart player-content"></div>
+  </div>
+
+  <div id="countdown" class="countdown hidden"><span id="countdown-n">3</span></div>
+
+  <div id="player-chrome" class="player-chrome">
+    <div class="player-top">
+      <button class="icon-btn back" data-back="song" aria-label="Back">‹</button>
+      <div class="player-meta">
+        <span id="player-title"></span>
+        <span id="player-key" class="sub"></span>
+      </div>
+      <button id="btn-restart" class="icon-btn" aria-label="Restart">↺</button>
+    </div>
+
+    <div class="player-bottom">
+      <div class="progress"><div id="progress-fill"></div></div>
+      <div class="player-controls">
+        <button id="p-font-down" class="ctl" aria-label="Smaller text">A−</button>
+        <button id="p-slower" class="ctl" aria-label="Slower">−</button>
+        <button id="p-toggle" class="ctl play-ctl" aria-label="Play or pause">▶</button>
+        <button id="p-faster" class="ctl" aria-label="Faster">＋</button>
+        <button id="p-font-up" class="ctl" aria-label="Larger text">A+</button>
+      </div>
+      <div class="player-readout"><span id="p-speed-readout"></span><span id="p-next" class="next"></span></div>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== Settings sheet ===================== -->
+<div id="sheet-settings" class="sheet hidden">
+  <div class="sheet-panel">
+    <header class="sheet-head">
+      <h2>Settings</h2>
+      <button id="btn-close-settings" class="icon-btn" aria-label="Close">✕</button>
+    </header>
+
+    <div class="sheet-body">
+      <p class="section-heading">Defaults for new songs</p>
+      <label class="control">
+        <span class="control-label">Scroll speed <b id="v-dspeed"></b></span>
+        <input id="d-speed" type="range" min="4" max="120" step="1">
+      </label>
+      <label class="control">
+        <span class="control-label">Font size <b id="v-dfont"></b></span>
+        <input id="d-font" type="range" min="12" max="44" step="1">
+      </label>
+
+      <div class="control seg-row">
+        <span class="control-label">Theme</span>
+        <div class="segmented" id="c-theme">
+          <button data-theme-set="auto" class="active">Auto</button>
+          <button data-theme-set="dark">Dark</button>
+          <button data-theme-set="light">Light</button>
+        </div>
+      </div>
+
+      <p class="section-heading">Backup</p>
+      <p class="hint">Your songs live only on this device. Export regularly — it is the only way to recover them.</p>
+      <div class="row-buttons">
+        <button id="btn-export" class="btn ghost">Export library</button>
+        <button id="btn-import" class="btn ghost">Import backup</button>
+      </div>
+      <input id="import-file" type="file" accept="application/json,.json" class="hidden">
+
+      <p class="section-heading">About</p>
+      <p id="storage-info" class="hint"></p>
+      <p id="wakelock-info" class="hint"></p>
+      <p class="hint">Songs Scroll <span id="app-version"></span> — works fully offline.</p>
+      <button id="btn-update" class="btn ghost">Check for app update</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script type="module" src="./app.js"></script>
+</body>
+</html>
