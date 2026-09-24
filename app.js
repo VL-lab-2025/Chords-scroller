@@ -8,14 +8,15 @@ import {
   DEFAULT_SETTINGS, getSongs, getSong, saveSong, deleteSong,
   getSetlists, getSetlist, saveSetlist, deleteSetlist,
   getPrefs, savePrefs, exportAll, importAll,
-  storageEstimate, requestPersistence,
+  storageEstimate, requestPersistence, getGithubConfig, saveGithubConfig,
 } from './store.js';
 import {
-  decodeBytes, splitSongbook, formatSong, formatSongbook, songKey, safeFilename,
+  decodeBytes, splitSongbook, formatSong, formatSongbook, songKey, safeFilename, sameSongText,
 } from './songbook.js';
+import { parseRepo, listSongbooks, downloadFile } from './github.js';
 import { createPlayer, wakeLockSupported } from './player.js';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -450,6 +451,8 @@ async function openSettings() {
     ? `${state.songs.length} songs · ${(est.usage / 1024 / 1024).toFixed(1)} MB used`
     : `${state.songs.length} songs stored on this device`;
 
+  await renderGithubSettings();
+  $('#gh-check').textContent = '';
   $('#sheet-settings').classList.remove('hidden');
 }
 
@@ -518,35 +521,49 @@ function shareSetlist() {
 }
 
 // ---------------------------------------------------------------------------
-// Importing .txt files
+// Importing .txt files — picked on the phone, or downloaded from GitHub
 // ---------------------------------------------------------------------------
 
 const closeSheets = () => $$('.sheet').forEach(s => s.classList.add('hidden'));
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 
-/**
- * Read the chosen files and show what was found before anything is saved —
- * splitting a songbook is heuristic, so the user gets to confirm it.
- */
+/** Files picked on the phone go into the same pipeline as GitHub downloads. */
 async function readTxtFiles(fileList) {
-  const files = Array.from(fileList || []);
-  if (!files.length) return;
-
-  const known = new Map(state.songs.map(s => [songKey(s.title, s.artist), s.id]));
-  const draft = { files: [], songs: [], setlistName: '', makeSetlist: false };
-  for (const f of files) {
-    let decoded;
+  const items = [];
+  for (const f of Array.from(fileList || [])) {
     try {
-      decoded = decodeBytes(new Uint8Array(await f.arrayBuffer()));
+      items.push({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) });
     } catch {
       toast(`Could not read ${f.name}`);
-      continue;
     }
-    const book = splitSongbook(decoded.text, { filename: f.name });
-    draft.files.push({ name: f.name, encoding: decoded.encoding, text: decoded.text, collection: book.collection });
+  }
+  if (items.length) await prepareImport(items);
+}
+
+/**
+ * Decode and split the files, compare every song with the library, and show
+ * the result before anything is saved — splitting a songbook is heuristic, so
+ * the user confirms it. Each song is one of:
+ *   new      not in the library yet; ticked
+ *   changed  same title and artist, different text; can update the copy
+ *   same     already in the library word for word; nothing to do
+ *
+ * Compares against the database, not the in-memory list: settings changed in
+ * the player are saved without refreshing that list.
+ */
+async function prepareImport(items) {
+  const [library, setlists] = await Promise.all([getSongs(), getSetlists()]);
+  const known = new Map(library.map(s => [songKey(s.title, s.artist), s]));
+  const draft = { files: [], songs: [], setlistName: '', setlistExists: false, makeSetlist: false };
+  for (const { name, bytes } of items) {
+    const decoded = decodeBytes(bytes);
+    const book = splitSongbook(decoded.text, { filename: name });
+    draft.files.push({ name, encoding: decoded.encoding, text: decoded.text, collection: book.collection });
     for (const s of book.songs) {
       if (!s.body.trim()) continue;
-      const dupId = known.get(songKey(s.title, s.artist)) || null;
-      draft.songs.push({ ...s, dupId, selected: !dupId });
+      const mine = known.get(songKey(s.title, s.artist));
+      const status = !mine ? 'new' : sameSongText(mine.body, s.body) ? 'same' : 'changed';
+      draft.songs.push({ ...s, status, existingId: mine ? mine.id : null, selected: status === 'new' });
     }
   }
   if (!draft.songs.length) { toast('No songs found in that file'); return; }
@@ -555,7 +572,10 @@ async function readTxtFiles(fileList) {
   if (draft.files.length === 1 && draft.songs.length > 1) {
     const f = draft.files[0];
     draft.setlistName = f.collection || f.name.replace(/\.[^.]*$/, '');
-    draft.makeSetlist = !state.setlists.some(sl => sl.name === draft.setlistName);
+    draft.setlistExists = setlists.some(sl => sl.name === draft.setlistName);
+    // Refreshing an existing setlist would undo any reordering done on the
+    // phone, so it is offered but never ticked by default.
+    draft.makeSetlist = !draft.setlistExists;
   }
   state.importDraft = draft;
   renderImportSheet();
@@ -563,42 +583,58 @@ async function readTxtFiles(fileList) {
   $('#sheet-import').classList.remove('hidden');
 }
 
+const capitalise = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
 function renderImportSheet() {
   const d = state.importDraft;
-  const chosen = d.songs.filter(s => s.selected).length;
-  const dups = d.songs.filter(s => s.dupId).length;
-  const n = d.songs.length;
+  const count = (status) => d.songs.filter(s => s.status === status).length;
+  const toAdd = d.songs.filter(s => s.status === 'new' && s.selected).length;
+  const toUpdate = d.songs.filter(s => s.status === 'changed' && s.selected).length;
 
   const source = d.files.length === 1 ? `${d.files[0].name} · ${d.files[0].encoding}` : `${d.files.length} files`;
-  $('#import-summary').textContent =
-    `${source} · ${n} song${n === 1 ? '' : 's'} found${dups ? ` · ${dups} already in your library` : ''}`;
+  const tally = [
+    count('new') ? `${count('new')} new` : '',
+    count('changed') ? `${count('changed')} changed` : '',
+    count('same') ? `${count('same')} already in your library` : '',
+  ].filter(Boolean).join(', ');
+  $('#import-summary').textContent = `${source} · ${plural(d.songs.length, 'song')}: ${tally}`;
 
+  const note = { new: '', changed: 'changed — tick to update your copy', same: 'already in your library' };
   $('#import-list').innerHTML = d.songs.map((s, i) => `
-    <li data-pick="${i}" class="${s.selected ? 'picked' : ''}">
+    <li data-pick="${i}" class="${s.selected ? 'picked' : ''}${s.status === 'same' ? ' same' : ''}">
       <span class="tick" aria-hidden="true">${s.selected ? '✓' : ''}</span>
       <div class="item-main">
         <div class="item-title">${esc(s.title)}</div>
-        <div class="item-sub">${esc([s.artist, s.dupId ? 'already in your library' : ''].filter(Boolean).join(' · '))}</div>
+        <div class="item-sub">${esc([s.artist, note[s.status]].filter(Boolean).join(' · '))}</div>
       </div>
     </li>`).join('');
-  $('#import-all').checked = chosen === n;
+  const selectable = d.songs.filter(s => s.status !== 'same');
+  $('#import-all-row').classList.toggle('hidden', !selectable.length);
+  $('#import-all').checked = selectable.length > 0 && selectable.every(s => s.selected);
 
   const canSet = !!d.setlistName;
   $('#import-setlist-row').classList.toggle('hidden', !canSet);
   if (canSet) {
-    const exists = state.setlists.some(sl => sl.name === d.setlistName);
     $('#import-setlist').checked = d.makeSetlist;
-    $('#import-setlist-label').textContent =
-      `Also create setlist “${d.setlistName}” in this order${exists ? ' (you already have one by that name)' : ''}`;
+    $('#import-setlist-label').textContent = d.setlistExists
+      ? `Update setlist “${d.setlistName}” to match this file`
+      : `Also create setlist “${d.setlistName}” in this order`;
   }
 
+  // Everything that will be in the library afterwards can go in the setlist.
+  const inSetlist = d.songs.filter(s => s.existingId || s.selected).length;
+  const setlistOnly = !toAdd && !toUpdate && canSet && d.makeSetlist && inSetlist > 1;
+  const action = [
+    toAdd ? `import ${plural(toAdd, 'song')}` : '',
+    toUpdate ? `update ${plural(toUpdate, 'song')}` : '',
+  ].filter(Boolean).join(' · ');
   const go = $('#btn-import-go');
-  const setlistOnly = !chosen && canSet && d.makeSetlist && dups > 1;
-  go.disabled = !chosen && !setlistOnly;
-  go.textContent = chosen ? `Import ${chosen} song${chosen === 1 ? '' : 's'}`
-    : setlistOnly ? 'Create setlist only' : 'Nothing selected';
+  go.disabled = !action && !setlistOnly;
+  go.textContent = action ? capitalise(action)
+    : setlistOnly ? (d.setlistExists ? 'Update setlist only' : 'Create setlist only')
+    : 'Nothing new to import';
 
-  $('#btn-import-whole').classList.toggle('hidden', !(d.files.length === 1 && n > 1));
+  $('#btn-import-whole').classList.toggle('hidden', !(d.files.length === 1 && d.songs.length > 1));
 }
 
 async function runImport() {
@@ -606,27 +642,137 @@ async function runImport() {
   if (!d) return;
   const ids = [];
   let added = 0;
+  let updated = 0;
   for (const s of d.songs) {
-    if (s.selected) {
+    if (s.status === 'new') {
+      if (!s.selected) continue;
       const rec = await saveSong({
         title: s.title, artist: s.artist, key: '', format: 'auto',
         body: s.body, settings: { ...state.prefs.defaults },
       });
       ids.push(rec.id);
       added++;
-    } else if (s.dupId) {
-      ids.push(s.dupId); // already in the library: still belongs in the setlist
+      continue;
     }
+    // Read the stored record now: it holds the latest speed, capo and key.
+    const mine = await getSong(s.existingId);
+    if (!mine) continue; // deleted since the preview was shown
+    if (s.status === 'changed' && s.selected) {
+      // New words and chords; the player's own settings stay.
+      await saveSong({ ...mine, body: s.body });
+      updated++;
+    }
+    ids.push(mine.id); // already in the library: still belongs in the setlist
   }
+
   let note = '';
   if (d.setlistName && d.makeSetlist && ids.length > 1) {
-    await saveSetlist({ name: d.setlistName, songIds: ids });
-    note = ` · setlist “${d.setlistName}”`;
+    const existing = (await getSetlists()).find(sl => sl.name === d.setlistName);
+    await saveSetlist(existing ? { ...existing, songIds: ids } : { name: d.setlistName, songIds: ids });
+    note = ` · setlist “${d.setlistName}” ${existing ? 'updated' : 'created'}`;
   }
   state.importDraft = null;
   closeSheets();
   await refreshLibrary();
-  toast(`Imported ${added} song${added === 1 ? '' : 's'}${note}`);
+  const done = [
+    added ? `imported ${plural(added, 'song')}` : '',
+    updated ? `updated ${plural(updated, 'song')}` : '',
+  ].filter(Boolean).join(', ');
+  toast(capitalise(done || 'nothing new imported') + note);
+}
+
+// ---------------------------------------------------------------------------
+// Songbooks on GitHub
+// ---------------------------------------------------------------------------
+
+/** The saved repository as { owner, repo, token }, or null if none is set up. */
+async function githubSource() {
+  const cfg = await getGithubConfig();
+  const repo = parseRepo(cfg.repo);
+  return repo ? { ...repo, token: cfg.token } : null;
+}
+
+const formatSize = (n) =>
+  n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} bytes`;
+
+async function openGithubSheet() {
+  closeSheets();
+  $('#sheet-github').classList.remove('hidden');
+  $('#gh-list').innerHTML = '';
+  const src = await githubSource();
+  if (!src) {
+    $('#gh-status').textContent = 'No repository set up yet. Add one under “GitHub songbooks” in Settings.';
+    return;
+  }
+  const name = `${src.owner}/${src.repo}`;
+  $('#gh-status').textContent = `Looking in ${name}…`;
+  try {
+    const files = await listSongbooks(src);
+    $('#gh-status').textContent = files.length
+      ? `${name} · tap a songbook to import it`
+      : `${name} has no .txt files yet.`;
+    $('#gh-list').innerHTML = files.map(f => {
+      const folder = f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) : '';
+      return `<li data-gh-path="${esc(f.path)}">
+        <div class="item-main">
+          <div class="item-title">${esc(f.name)}</div>
+          <div class="item-sub">${esc([folder, formatSize(f.size)].filter(Boolean).join(' · '))}</div>
+        </div>
+        <span class="chip">↓</span>
+      </li>`;
+    }).join('');
+  } catch (err) {
+    $('#gh-status').textContent = err.message;
+  }
+}
+
+async function importFromGithub(path) {
+  const src = await githubSource();
+  if (!src) return;
+  const name = path.split('/').pop();
+  $('#gh-status').textContent = `Downloading ${name}…`;
+  try {
+    await prepareImport([{ name, bytes: await downloadFile(src, path) }]);
+  } catch (err) {
+    $('#gh-status').textContent = err.message;
+  }
+}
+
+async function renderGithubSettings() {
+  const cfg = await getGithubConfig();
+  $('#gh-repo').value = cfg.repo;
+  $('#gh-token').value = ''; // a saved token is never put back on screen
+  $('#gh-token-state').textContent = cfg.token
+    ? `A token is saved on this phone (ending …${cfg.token.slice(-4)}). Leave the field empty to keep it.`
+    : 'No token saved: only public repositories can be read.';
+  $('#btn-gh-forget').classList.toggle('hidden', !cfg.token);
+}
+
+async function saveGithubSettings() {
+  const repo = parseRepo($('#gh-repo').value);
+  if (!repo) {
+    $('#gh-check').textContent = 'Enter the repository as owner/name, for example VL-lab-2025/chords-songbooks.';
+    return;
+  }
+  const current = await getGithubConfig();
+  const token = $('#gh-token').value.trim() || current.token;
+  await saveGithubConfig({ repo: `${repo.owner}/${repo.repo}`, token });
+  await renderGithubSettings();
+  $('#gh-check').textContent = 'Saved. Checking the connection…';
+  try {
+    const files = await listSongbooks({ ...repo, token });
+    $('#gh-check').textContent = `Connected: ${plural(files.length, 'songbook')} found.`;
+  } catch (err) {
+    $('#gh-check').textContent = err.message;
+  }
+}
+
+async function forgetGithubToken() {
+  const cfg = await getGithubConfig();
+  await saveGithubConfig({ repo: cfg.repo, token: '' });
+  await renderGithubSettings();
+  $('#gh-check').textContent = '';
+  toast('Token removed from this phone');
 }
 
 /** The escape hatch when splitting got it wrong: keep the file as one song. */
@@ -635,7 +781,7 @@ async function importWholeFile() {
   const record = await saveSong({
     title: f.collection || f.name.replace(/\.[^.]*$/, '') || 'Untitled',
     artist: '', key: '', format: 'auto',
-    body: f.text.replace(/^﻿/, '').replace(/^(?:[ \t　]*\n)+/, '').replace(/\s+$/, ''),
+    body: f.text.replace(/^\uFEFF/, '').replace(/^(?:[ \t\u3000]*\n)+/, '').replace(/\s+$/, ''),
     settings: { ...state.prefs.defaults },
   });
   state.importDraft = null;
@@ -684,13 +830,28 @@ function wire() {
     const li = e.target.closest('[data-pick]');
     if (!li) return;
     const s = state.importDraft.songs[+li.dataset.pick];
+    if (s.status === 'same') return; // importing it again would only make a copy
     s.selected = !s.selected;
     renderImportSheet();
   });
   $('#import-all').addEventListener('change', (e) => {
-    state.importDraft.songs.forEach(s => { s.selected = e.target.checked; });
+    state.importDraft.songs.forEach(s => { if (s.status !== 'same') s.selected = e.target.checked; });
     renderImportSheet();
   });
+
+  // --- songbooks on GitHub ---
+  $('#btn-add-github').addEventListener('click', openGithubSheet);
+  $('#gh-list').addEventListener('click', (e) => {
+    const li = e.target.closest('[data-gh-path]');
+    if (li) importFromGithub(li.dataset.ghPath);
+  });
+  $('#btn-gh-settings').addEventListener('click', async () => {
+    closeSheets();
+    await openSettings();
+    $('#gh-section').scrollIntoView({ block: 'start' });
+  });
+  $('#btn-gh-save').addEventListener('click', saveGithubSettings);
+  $('#btn-gh-forget').addEventListener('click', forgetGithubToken);
   $('#import-setlist').addEventListener('change', (e) => {
     state.importDraft.makeSetlist = e.target.checked;
     renderImportSheet();

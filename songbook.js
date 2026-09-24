@@ -138,7 +138,7 @@ function singleSong(lines, fileTitle) {
  * "Гитара" above the first song) and `mode` says how songs were found.
  */
 export function splitSongbook(text, { filename = '' } = {}) {
-  const src = String(text == null ? '' : text).replace(/^﻿/, '').replace(/\r\n?/g, '\n');
+  const src = String(text == null ? '' : text).replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n');
   const lines = src.split('\n');
   const fileTitle = String(filename).replace(/\.[^./\\]*$/, '').trim();
 
@@ -213,6 +213,16 @@ export function formatSongbook(songs, { name = '', asWritten = false } = {}) {
   if (name && name.trim()) parts.push(`${name.trim()}\n`);
   for (const song of songs) parts.push(`${DIVIDER}\n${formatSong(song, { asWritten })}`);
   return parts.join('\n');
+}
+
+/**
+ * Do two copies of a song say the same thing? Line endings, trailing spaces
+ * and blank lines at either end don't count as changes.
+ */
+export function sameSongText(a, b) {
+  const norm = (s) => trimBlankLines(String(s || '').replace(/\r\n?/g, '\n').split('\n')
+    .map((l) => l.replace(/\s+$/, ''))).join('\n');
+  return norm(a) === norm(b);
 }
 
 /** Case-, punctuation- and ё/е-insensitive identity, for spotting duplicates. */

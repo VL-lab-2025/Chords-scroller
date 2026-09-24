@@ -368,3 +368,8 @@ input[type="range"]::-webkit-slider-thumb {
 .check-list li.picked .tick { background: var(--blue); border-color: var(--blue); }
 .check-list li:not(.picked) .item-title { color: var(--muted); }
 #sheet-import .btn.play { margin-top: 8px; }
+
+/* Songs already in the library, word for word: shown, but nothing to do. */
+.check-list li.same { opacity: .5; cursor: default; }
+.check-list li.same .tick { border-style: dashed; }
+.sheet-body a { color: var(--blue); font-weight: 600; }

@@ -104,9 +104,9 @@ eq('Бойцы is a lyric, not a strum note', parseSong('Бойцы шли').lin
 eq('chord row does not swallow a section', parseSong('Am\nПрипев:').lines.map(l => l.t), ['line', 'section']);
 
 // --- whitespace -------------------------------------------------------------
-eq('full-width space is one column', normalizeSpaces('　　Am'), '  Am');
+eq('full-width space is one column', normalizeSpaces('\u3000\u3000Am'), '  Am');
 eq('tab to 4-column stop', normalizeSpaces('Am\tC'), 'Am  C');
-const wide = parseSong('　　　Am\nabc lyric').lines[0];
+const wide = parseSong('\u3000\u3000\u3000Am\nabc lyric').lines[0];
 eq('chord after full-width spaces lands on column 3', wide.chords[0].i, 3);
 
 // --- chord inventory ----------------------------------------------------------

@@ -120,6 +120,24 @@ export function savePrefs(prefs) {
 }
 
 // ---------------------------------------------------------------------------
+// GitHub songbook source
+//
+// Kept in its own record, deliberately apart from the preferences above: the
+// JSON backup exports preferences, and a backup file gets shared around. The
+// access token must never ride along.
+// ---------------------------------------------------------------------------
+
+export function getGithubConfig() {
+  return tx(PREFS, 'readonly', s => s.get('github'))
+    .then(r => ({ repo: '', token: '', ...(r ? r.v : {}) }));
+}
+
+export function saveGithubConfig({ repo = '', token = '' }) {
+  const v = { repo: String(repo).trim(), token: String(token).trim() };
+  return tx(PREFS, 'readwrite', s => s.put({ k: 'github', v })).then(() => v);
+}
+
+// ---------------------------------------------------------------------------
 // Backup / restore
 //
 // iOS can evict web storage, and phones get replaced. This export is the user's

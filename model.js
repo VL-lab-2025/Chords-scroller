@@ -75,12 +75,12 @@ const DECORATION_RES = [
 /** Turn tabs, full-width and non-breaking spaces into plain columns. */
 export function normalizeSpaces(line) {
   const s = String(line == null ? '' : line);
-  if (!/[\t  -​　﻿\r]/.test(s)) return s;
+  if (!/[\t\u00A0\u2000-\u200B\u3000\uFEFF\r]/.test(s)) return s;
   let out = '';
   for (const ch of s) {
     if (ch === '\t') out += ' '.repeat(TAB_STOP - (out.length % TAB_STOP));
-    else if (ch === '​' || ch === '﻿' || ch === '\r') continue;
-    else if (ch === ' ' || ch === '　' || (ch >= ' ' && ch <= ' ')) out += ' ';
+    else if (ch === '\u200B' || ch === '\uFEFF' || ch === '\r') continue;
+    else if (ch === '\u00A0' || ch === '\u3000' || (ch >= '\u2000' && ch <= '\u200A')) out += ' ';
     else out += ch;
   }
   return out;

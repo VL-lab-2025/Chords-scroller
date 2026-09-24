@@ -5,6 +5,6 @@
   "type": "module",
   "description": "Offline PWA for autoscrolling guitar chord charts on iPhone",
   "scripts": {
-    "test": "node test-model.mjs && node test-songbook.mjs && node test-player.mjs"
+    "test": "node test-model.mjs && node test-songbook.mjs && node test-github.mjs && node test-player.mjs"
   }
 }

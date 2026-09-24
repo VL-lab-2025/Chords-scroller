@@ -54,10 +54,32 @@ a chord row (`(2)`, `x2`, `|`, `↓`) stay where they were written.
 iCloud Drive or a Telegram download. A file can hold one song or a whole
 songbook. Songbooks are split at each song's title line — `Title, Artist`,
 ideally with a strumming or capo note right under it — or at divider lines
-(`=====`). You see every song found before anything is saved; songs already in
-your library are left unticked, and a songbook can become a setlist in its
-original order. If a file splits wrongly, import it as a single song instead.
-UTF-8, UTF-16 and old Windows-1251 files all read correctly.
+(`=====`). You see every song found before anything is saved, and a songbook
+can become a setlist in its original order. Importing the same songbook again
+is safe: songs you already have word for word are left alone, and songs whose
+text changed are offered as updates — your speed, capo and key for them are
+kept. If a file splits wrongly, import it as a single song instead. UTF-8,
+UTF-16 and old Windows-1251 files all read correctly.
+
+**Songbooks on GitHub** — keep your songbooks in a GitHub repository and
+download them straight to the phone with ＋ → *From GitHub*. Edit a songbook
+on github.com (the web editor works on a phone too), download it again, and only
+what's new or changed comes in. Set it up once:
+
+1. Create a **private** repository on github.com, for example
+   `chords-songbooks`, and put your .txt songbooks in it. Keep it private:
+   lyrics are usually copyrighted, and a private repository publishes nothing.
+2. Create an access token: github.com → Settings → Developer settings →
+   Fine-grained tokens → *Generate new token*. Under *Repository access* pick
+   **Only select repositories** and choose that one repository; under
+   *Permissions* set **Contents** to **Read-only**. Copy the token.
+3. In Chords: Settings → *GitHub songbooks*. Enter the repository as
+   `owner/name`, paste the token, tap *Save and test*.
+
+The token stays on the phone. It is sent only to api.github.com, never appears
+in a URL, and is never included in a backup or a shared file. When it expires,
+the app says so; make a new one and paste it in. A public repository works
+without a token.
 
 **Sending songs** — on a song, *Share as .txt* opens the share sheet (Telegram,
 AirDrop, Files…) and *Copy text* puts it on the clipboard. What you send is what
@@ -103,7 +125,7 @@ app updates itself.
 **One rule:** whenever you change any file, bump the version in `sw.js`:
 
 ```js
-const CACHE = 'songs-scroll-v4';   // -> v5, v6, ...
+const CACHE = 'songs-scroll-v5';   // -> v6, v7, ...
 ```
 
 That string is what tells installed phones their cached copy is stale. Without
@@ -134,8 +156,9 @@ npm test
 ```
 
 Covers the areas with real logic: chord parsing and transposition
-(`test-model.mjs`), reading and writing .txt songbooks (`test-songbook.mjs`) and
-the scroll engine's timing (`test-player.mjs`).
+(`test-model.mjs`), reading and writing .txt songbooks (`test-songbook.mjs`),
+the GitHub download client against a fake network (`test-github.mjs`) and the
+scroll engine's timing (`test-player.mjs`).
 
 **Keep songbooks out of the repo.** The repo is public, and song lyrics are
 usually copyrighted. Put personal files in `data/`, which is gitignored, and
@@ -147,6 +170,7 @@ never commit them — test fixtures here use invented text only.
 |---|---|
 | `model.js` | chord grammar, both input formats, transposition, render model |
 | `songbook.js` | reading and writing .txt files: encodings, splitting, formatting |
+| `github.js` | downloading songbooks from a GitHub repository |
 | `store.js` | IndexedDB persistence, export/import |
 | `player.js` | scroll engine, wake lock |
 | `app.js` | views and wiring |

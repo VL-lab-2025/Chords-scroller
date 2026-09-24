@@ -274,6 +274,25 @@
       <button id="btn-export-txt" class="btn ghost full">Export all songs as .txt</button>
       <p class="hint">The backup restores everything, including each song's speed and capo. The .txt holds the songs alone, readable anywhere and importable with ＋.</p>
 
+      <p class="section-heading" id="gh-section">GitHub songbooks</p>
+      <p class="hint">Download .txt songbooks with ＋ → From GitHub. Keep the repository private if the songs are copyrighted.</p>
+      <label class="field">
+        <span>Repository</span>
+        <input id="gh-repo" type="text" placeholder="owner/name" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      </label>
+      <label class="field">
+        <span>Access token <i>(needed for a private repository)</i></span>
+        <input id="gh-token" type="password" placeholder="github_pat_…" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      </label>
+      <p id="gh-token-state" class="hint"></p>
+      <div class="row-buttons">
+        <button id="btn-gh-save" class="btn ghost">Save and test</button>
+        <button id="btn-gh-forget" class="btn ghost">Forget token</button>
+      </div>
+      <p id="gh-check" class="hint" role="status"></p>
+      <p class="hint">To make a token: github.com → Settings → Developer settings → Fine-grained tokens → give it access to only this repository, with <b>Contents: Read-only</b>. It stays on this phone and is never included in backups or shared files.
+        <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Create a token</a></p>
+
       <p class="section-heading">About</p>
       <p id="storage-info" class="hint"></p>
       <p id="wakelock-info" class="hint"></p>
@@ -299,6 +318,25 @@
         <b>Import .txt files</b>
         <span>One song per file, or a whole songbook — from Files, iCloud Drive or a Telegram download</span>
       </button>
+      <button id="btn-add-github" class="action-row">
+        <b>From GitHub</b>
+        <span>Download a songbook from your own GitHub repository</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== GitHub songbooks ===================== -->
+<div id="sheet-github" class="sheet hidden">
+  <div class="sheet-panel">
+    <header class="sheet-head">
+      <h2>From GitHub</h2>
+      <button class="icon-btn" data-close-sheet aria-label="Close">✕</button>
+    </header>
+    <div class="sheet-body">
+      <p id="gh-status" class="hint"></p>
+      <ul id="gh-list" class="list"></ul>
+      <button id="btn-gh-settings" class="btn ghost full">GitHub settings</button>
     </div>
   </div>
 </div>
@@ -313,7 +351,7 @@
     </header>
     <div class="sheet-body">
       <p id="import-summary" class="hint"></p>
-      <label class="check-row">
+      <label class="check-row" id="import-all-row">
         <input type="checkbox" id="import-all">
         <span>Select all</span>
       </label>

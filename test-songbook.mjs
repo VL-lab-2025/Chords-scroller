@@ -5,7 +5,7 @@
 // Cyrillic look-alike chords — using invented placeholder text only.
 import {
   decodeBytes, parseTitleLine, formatTitleLine, splitSongbook,
-  formatSong, formatSongbook, songKey, safeFilename,
+  formatSong, formatSongbook, songKey, safeFilename, sameSongText,
 } from './songbook.js';
 
 let pass = 0, fail = 0;
@@ -123,6 +123,12 @@ const flat = { ...song, settings: { transpose: 0, capo: 0, accidentals: 'auto' }
 eq('no shift: body verbatim', formatSong(flat), 'Песня — Группа\n\nAm        C\nслова тут\n');
 eq('shared song imports back with its capo note',
   splitSongbook(formatSong(song), { filename: 'Песня - Группа.txt' }).songs[0].body.split('\n')[0], 'Capo 2');
+
+// --- has a re-downloaded song changed? ---------------------------------------------------------
+eq('CRLF and trailing spaces are not changes', sameSongText('Am  C\r\nслова  \r\n', 'Am  C\nслова'), true);
+eq('blank lines at the ends are not changes', sameSongText('\n\nAm\nслова\n\n', 'Am\nслова'), true);
+eq('a corrected chord is a change', sameSongText('Am  C\nслова', 'Am  G\nслова'), false);
+eq('leading spaces of a chord row matter', sameSongText('   Am\nслова', 'Am\nслова'), false);
 
 // --- identity and file names ------------------------------------------------------------------
 eq('duplicate key ignores case, ё and punctuation', songKey('Ёлка', 'Кино!'), songKey('елка', '  кино'));
