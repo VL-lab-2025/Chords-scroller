@@ -44,7 +44,26 @@ Some lyric line here
 ```
 
 Anything copied from a tab site generally pastes in as-is. `[Verse]`,
-`[Chorus]` and similar are recognised as section headings, not chords.
+`[Chorus]`, `Припев:`, `Куплет 2` and similar are recognised as section
+headings, not chords. Russian conventions work too: `H7` means B7, chords typed
+with Cyrillic look-alike letters (`С`, `Е`) are understood, and strumming notes
+such as `Бой 2` are shown as notes. Repeat marks, bar lines and strum arrows in
+a chord row (`(2)`, `x2`, `|`, `↓`) stay where they were written.
+
+**Importing .txt files** — ＋ → *Import .txt files*, then pick files from Files,
+iCloud Drive or a Telegram download. A file can hold one song or a whole
+songbook. Songbooks are split at each song's title line — `Title, Artist`,
+ideally with a strumming or capo note right under it — or at divider lines
+(`=====`). You see every song found before anything is saved; songs already in
+your library are left unticked, and a songbook can become a setlist in its
+original order. If a file splits wrongly, import it as a single song instead.
+UTF-8, UTF-16 and old Windows-1251 files all read correctly.
+
+**Sending songs** — on a song, *Share as .txt* opens the share sheet (Telegram,
+AirDrop, Files…) and *Copy text* puts it on the clipboard. What you send is what
+you see: with a capo or transpose set, the recipient gets the same chord shapes
+plus a `Capo N` line. A setlist shares as one file, in order. Everything the app
+exports imports back song for song.
 
 **Capo and transpose.** The chords on screen are always **the shapes you
 finger**, never the concert pitch:
@@ -69,7 +88,9 @@ player shows what's coming next.
 ## Back up your songs
 
 Settings → **Export library** writes a JSON file (via the iOS share sheet, so
-you can drop it in Files or iCloud Drive). **Import backup** restores it.
+you can drop it in Files or iCloud Drive). **Import backup** restores it,
+including each song's speed, font size and capo. **Export all songs as .txt**
+writes the songs alone as one readable songbook.
 
 Do this occasionally. iOS can evict web-app storage, and the export is the only
 copy that exists off the device.
@@ -82,7 +103,7 @@ app updates itself.
 **One rule:** whenever you change any file, bump the version in `sw.js`:
 
 ```js
-const CACHE = 'songs-scroll-v3';   // -> v4, v5, ...
+const CACHE = 'songs-scroll-v4';   // -> v5, v6, ...
 ```
 
 That string is what tells installed phones their cached copy is stale. Without
@@ -112,14 +133,20 @@ instead of after deploying.
 npm test
 ```
 
-Covers the two areas with real logic: chord parsing / transposition
-(`test-model.mjs`) and the scroll engine's timing (`test-player.mjs`).
+Covers the areas with real logic: chord parsing and transposition
+(`test-model.mjs`), reading and writing .txt songbooks (`test-songbook.mjs`) and
+the scroll engine's timing (`test-player.mjs`).
+
+**Keep songbooks out of the repo.** The repo is public, and song lyrics are
+usually copyrighted. Put personal files in `data/`, which is gitignored, and
+never commit them — test fixtures here use invented text only.
 
 ## Files
 
 | File | Purpose |
 |---|---|
 | `model.js` | chord grammar, both input formats, transposition, render model |
+| `songbook.js` | reading and writing .txt files: encodings, splitting, formatting |
 | `store.js` | IndexedDB persistence, export/import |
 | `player.js` | scroll engine, wake lock |
 | `app.js` | views and wiring |

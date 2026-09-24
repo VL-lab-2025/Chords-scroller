@@ -10,9 +10,12 @@ import {
   getPrefs, savePrefs, exportAll, importAll,
   storageEstimate, requestPersistence,
 } from './store.js';
+import {
+  decodeBytes, splitSongbook, formatSong, formatSongbook, songKey, safeFilename,
+} from './songbook.js';
 import { createPlayer, wakeLockSupported } from './player.js';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -32,6 +35,7 @@ const state = {
   player: null,
   search: '',
   history: [],
+  importDraft: null,   // songs read from .txt files, awaiting confirmation
 };
 
 // ---------------------------------------------------------------------------
@@ -70,18 +74,25 @@ function toast(message, ms = 2400) {
 function renderChart(el, parsed, settings, song) {
   const shift = displayShift(settings.transpose, settings.capo);
   const flats = useFlatsFor(song, parsed, shift, settings.accidentals);
+  // Untransposed, show chords exactly as the author wrote them ("H7" stays
+  // "H7"); an explicit ♭/♯ choice respells everything.
+  const keep = settings.accidentals === 'auto';
   const out = [];
 
   for (const line of parsed.lines) {
     if (line.t === 'blank') { out.push('<div class="blank"></div>'); continue; }
-    if (line.t === 'section') { out.push(`<div class="section">${esc(line.label)}</div>`); continue; }
+    if (line.t === 'section') {
+      const note = line.note ? `<span class="note">${esc(line.note)}</span>` : '';
+      out.push(`<div class="section">${esc(line.label)}${note}</div>`);
+      continue;
+    }
     if (line.t === 'comment') { out.push(`<div class="comment">${esc(line.text)}</div>`); continue; }
     if (!line.chords.length) {
       out.push(`<div class="line plain">${line.text ? esc(line.text) : '&nbsp;'}</div>`);
       continue;
     }
-    const segs = segmentsFor(line, shift, flats)
-      .map(s => `<span class="seg"><span class="ch">${s.chord ? esc(s.chord) : ''}</span>${esc(s.text)}</span>`)
+    const segs = segmentsFor(line, shift, flats, keep)
+      .map(s => `<span class="seg"><span class="ch${s.deco ? ' x' : ''}">${s.chord ? esc(s.chord) : ''}</span>${esc(s.text)}</span>`)
       .join('');
     out.push(`<div class="line">${segs}</div>`);
   }
@@ -140,16 +151,26 @@ function renderSongList() {
   }).join('');
 }
 
+// Search re-renders the list on every keystroke; parsing every song each time
+// is wasted work. Any edit or settings change bumps updatedAt, so it keys this.
+const keyLabelCache = new Map();
+
 /** The chord the player will actually finger first — shown as the list badge. */
 function songKeyLabel(song) {
+  const cacheKey = `${song.id}:${song.updatedAt}`;
+  if (keyLabelCache.has(cacheKey)) return keyLabelCache.get(cacheKey);
+  let label = '';
   try {
-    const parsed = parseSong(song.body, song.format === 'auto' ? null : song.format);
+    const parsed = parseSong(song.body);
     const tonic = tonicOf(song, parsed);
-    if (!tonic) return '';
-    const shift = displayShift(song.settings.transpose, song.settings.capo);
-    const flats = useFlatsFor(song, parsed, shift, song.settings.accidentals);
-    return keyName(tonic.pitch + shift, tonic.minor, flats);
-  } catch { return ''; }
+    if (tonic) {
+      const shift = displayShift(song.settings.transpose, song.settings.capo);
+      const flats = useFlatsFor(song, parsed, shift, song.settings.accidentals);
+      label = keyName(tonic.pitch + shift, tonic.minor, flats);
+    }
+  } catch { /* an unparseable song simply gets no badge */ }
+  keyLabelCache.set(cacheKey, label);
+  return label;
 }
 
 function renderSetlistList() {
@@ -171,7 +192,7 @@ async function openSong(id, { push = true } = {}) {
   const song = await getSong(id);
   if (!song) { toast('Song not found'); return; }
   state.song = song;
-  state.parsed = parseSong(song.body, song.format === 'auto' ? null : song.format);
+  state.parsed = parseSong(song.body);
   $('#song-title').textContent = song.title;
   $('#song-artist').textContent = song.artist || '';
   syncSongControls();
@@ -196,8 +217,17 @@ function syncSongControls() {
 
   const shift = displayShift(s.transpose, s.capo);
   const flats = useFlatsFor(state.song, state.parsed, shift, s.accidentals);
-  $('#chord-inventory').innerHTML = chordInventory(state.parsed, shift, flats)
+  $('#chord-inventory').innerHTML = chordInventory(state.parsed, shift, flats, s.accidentals === 'auto')
     .map(c => `<span>${esc(c)}</span>`).join('');
+
+  // Sharing sends what you see; say so when that differs from the original.
+  const changes = [
+    s.transpose ? `transposed ${s.transpose > 0 ? '+' : ''}${s.transpose}` : '',
+    s.capo ? `capo ${s.capo}` : '',
+  ].filter(Boolean);
+  $('#share-hint').textContent = changes.length
+    ? `Shared as you play it (${changes.join(', ')}) — the recipient sees the same chords.`
+    : 'Shared exactly as written.';
 
   renderChart($('#song-preview'), state.parsed, { ...s, fontSize: 16 }, state.song);
 }
@@ -313,7 +343,7 @@ let chromeTimer = null;
 
 function startPlayer(song, { setlist = null, index = -1 } = {}) {
   state.song = song;
-  state.parsed = parseSong(song.body, song.format === 'auto' ? null : song.format);
+  state.parsed = parseSong(song.body);
   state.setlist = setlist;
   state.setlistIndex = index;
 
@@ -423,24 +453,24 @@ async function openSettings() {
   $('#sheet-settings').classList.remove('hidden');
 }
 
-async function exportLibrary() {
-  const data = await exportAll();
-  const json = JSON.stringify(data, null, 2);
-  const name = `chords-backup-${data.exportedAt.slice(0, 10)}.json`;
-
-  // On iOS the share sheet is far more reliable than a download link, and it
-  // lets the file go straight to Files or iCloud Drive.
+/**
+ * Hand a file to the share sheet — on iOS that reaches Telegram, Files,
+ * AirDrop and the rest — falling back to a download where sharing files is
+ * unsupported. Callers must not await anything slow first: Safari only allows
+ * sharing shortly after the tap that asked for it.
+ */
+async function shareFile(name, content, type, title) {
   try {
-    const file = new File([json], name, { type: 'application/json' });
+    const file = new File([content], name, { type });
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], title: 'Chords backup' });
+      await navigator.share({ files: [file], title });
       return;
     }
   } catch (err) {
     if (err && err.name === 'AbortError') return; // user dismissed the sheet
   }
 
-  const url = URL.createObjectURL(new Blob([json], { type: 'application/json' }));
+  const url = URL.createObjectURL(new Blob([content], { type }));
   const a = document.createElement('a');
   a.href = url;
   a.download = name;
@@ -448,6 +478,170 @@ async function exportLibrary() {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+async function exportLibrary() {
+  const data = await exportAll();
+  await shareFile(`chords-backup-${data.exportedAt.slice(0, 10)}.json`,
+    JSON.stringify(data, null, 2), 'application/json', 'Chords backup');
+}
+
+/** Every song as one readable .txt songbook, chords as written. */
+function exportLibraryText() {
+  if (!state.songs.length) { toast('No songs to export yet'); return; }
+  const stamp = new Date().toISOString().slice(0, 10);
+  shareFile(`chords-songs-${stamp}.txt`,
+    formatSongbook(state.songs, { name: `Chords — ${stamp}`, asWritten: true }), 'text/plain', 'Chords songs');
+}
+
+const songFileName = (song) => safeFilename(song.artist ? `${song.title} - ${song.artist}` : song.title);
+
+function shareSong() {
+  shareFile(songFileName(state.song), formatSong(state.song), 'text/plain', state.song.title);
+}
+
+async function copySong() {
+  try {
+    await navigator.clipboard.writeText(formatSong(state.song));
+    toast('Copied — paste it into any chat');
+  } catch {
+    toast('Copying is not available here');
+  }
+}
+
+function shareSetlist() {
+  const byId = new Map(state.songs.map(s => [s.id, s]));
+  const songs = state.setlist.songIds.map(id => byId.get(id)).filter(Boolean);
+  if (!songs.length) { toast('This setlist is empty'); return; }
+  shareFile(safeFilename(state.setlist.name), formatSongbook(songs, { name: state.setlist.name }),
+    'text/plain', state.setlist.name);
+}
+
+// ---------------------------------------------------------------------------
+// Importing .txt files
+// ---------------------------------------------------------------------------
+
+const closeSheets = () => $$('.sheet').forEach(s => s.classList.add('hidden'));
+
+/**
+ * Read the chosen files and show what was found before anything is saved —
+ * splitting a songbook is heuristic, so the user gets to confirm it.
+ */
+async function readTxtFiles(fileList) {
+  const files = Array.from(fileList || []);
+  if (!files.length) return;
+
+  const known = new Map(state.songs.map(s => [songKey(s.title, s.artist), s.id]));
+  const draft = { files: [], songs: [], setlistName: '', makeSetlist: false };
+  for (const f of files) {
+    let decoded;
+    try {
+      decoded = decodeBytes(new Uint8Array(await f.arrayBuffer()));
+    } catch {
+      toast(`Could not read ${f.name}`);
+      continue;
+    }
+    const book = splitSongbook(decoded.text, { filename: f.name });
+    draft.files.push({ name: f.name, encoding: decoded.encoding, text: decoded.text, collection: book.collection });
+    for (const s of book.songs) {
+      if (!s.body.trim()) continue;
+      const dupId = known.get(songKey(s.title, s.artist)) || null;
+      draft.songs.push({ ...s, dupId, selected: !dupId });
+    }
+  }
+  if (!draft.songs.length) { toast('No songs found in that file'); return; }
+
+  // A songbook keeps its order as a setlist, named after the book or the file.
+  if (draft.files.length === 1 && draft.songs.length > 1) {
+    const f = draft.files[0];
+    draft.setlistName = f.collection || f.name.replace(/\.[^.]*$/, '');
+    draft.makeSetlist = !state.setlists.some(sl => sl.name === draft.setlistName);
+  }
+  state.importDraft = draft;
+  renderImportSheet();
+  closeSheets();
+  $('#sheet-import').classList.remove('hidden');
+}
+
+function renderImportSheet() {
+  const d = state.importDraft;
+  const chosen = d.songs.filter(s => s.selected).length;
+  const dups = d.songs.filter(s => s.dupId).length;
+  const n = d.songs.length;
+
+  const source = d.files.length === 1 ? `${d.files[0].name} · ${d.files[0].encoding}` : `${d.files.length} files`;
+  $('#import-summary').textContent =
+    `${source} · ${n} song${n === 1 ? '' : 's'} found${dups ? ` · ${dups} already in your library` : ''}`;
+
+  $('#import-list').innerHTML = d.songs.map((s, i) => `
+    <li data-pick="${i}" class="${s.selected ? 'picked' : ''}">
+      <span class="tick" aria-hidden="true">${s.selected ? '✓' : ''}</span>
+      <div class="item-main">
+        <div class="item-title">${esc(s.title)}</div>
+        <div class="item-sub">${esc([s.artist, s.dupId ? 'already in your library' : ''].filter(Boolean).join(' · '))}</div>
+      </div>
+    </li>`).join('');
+  $('#import-all').checked = chosen === n;
+
+  const canSet = !!d.setlistName;
+  $('#import-setlist-row').classList.toggle('hidden', !canSet);
+  if (canSet) {
+    const exists = state.setlists.some(sl => sl.name === d.setlistName);
+    $('#import-setlist').checked = d.makeSetlist;
+    $('#import-setlist-label').textContent =
+      `Also create setlist “${d.setlistName}” in this order${exists ? ' (you already have one by that name)' : ''}`;
+  }
+
+  const go = $('#btn-import-go');
+  const setlistOnly = !chosen && canSet && d.makeSetlist && dups > 1;
+  go.disabled = !chosen && !setlistOnly;
+  go.textContent = chosen ? `Import ${chosen} song${chosen === 1 ? '' : 's'}`
+    : setlistOnly ? 'Create setlist only' : 'Nothing selected';
+
+  $('#btn-import-whole').classList.toggle('hidden', !(d.files.length === 1 && n > 1));
+}
+
+async function runImport() {
+  const d = state.importDraft;
+  if (!d) return;
+  const ids = [];
+  let added = 0;
+  for (const s of d.songs) {
+    if (s.selected) {
+      const rec = await saveSong({
+        title: s.title, artist: s.artist, key: '', format: 'auto',
+        body: s.body, settings: { ...state.prefs.defaults },
+      });
+      ids.push(rec.id);
+      added++;
+    } else if (s.dupId) {
+      ids.push(s.dupId); // already in the library: still belongs in the setlist
+    }
+  }
+  let note = '';
+  if (d.setlistName && d.makeSetlist && ids.length > 1) {
+    await saveSetlist({ name: d.setlistName, songIds: ids });
+    note = ` · setlist “${d.setlistName}”`;
+  }
+  state.importDraft = null;
+  closeSheets();
+  await refreshLibrary();
+  toast(`Imported ${added} song${added === 1 ? '' : 's'}${note}`);
+}
+
+/** The escape hatch when splitting got it wrong: keep the file as one song. */
+async function importWholeFile() {
+  const f = state.importDraft.files[0];
+  const record = await saveSong({
+    title: f.collection || f.name.replace(/\.[^.]*$/, '') || 'Untitled',
+    artist: '', key: '', format: 'auto',
+    body: f.text.replace(/^﻿/, '').replace(/^(?:[ \t　]*\n)+/, '').replace(/\s+$/, ''),
+    settings: { ...state.prefs.defaults },
+  });
+  state.importDraft = null;
+  closeSheets();
+  await refreshLibrary();
+  openSong(record.id);
 }
 
 async function importLibrary(file) {
@@ -472,8 +666,43 @@ function applyTheme(theme) {
 
 function wire() {
   // --- library ---
-  $('#btn-new-song').addEventListener('click', () => openEditor(null));
+  $('#btn-new-song').addEventListener('click', () => $('#sheet-add').classList.remove('hidden'));
   $('#btn-settings').addEventListener('click', openSettings);
+
+  // --- adding songs: type one in, or import .txt files ---
+  $('#btn-add-new').addEventListener('click', () => { closeSheets(); openEditor(null); });
+  // The file picker must open inside the tap itself, or iOS refuses it.
+  const pickTxt = () => { closeSheets(); $('#txt-file').click(); };
+  $('#btn-add-import').addEventListener('click', pickTxt);
+  $('#btn-import-empty').addEventListener('click', pickTxt);
+  $('#txt-file').addEventListener('change', (e) => {
+    readTxtFiles(e.target.files);
+    e.target.value = '';
+  });
+
+  $('#import-list').addEventListener('click', (e) => {
+    const li = e.target.closest('[data-pick]');
+    if (!li) return;
+    const s = state.importDraft.songs[+li.dataset.pick];
+    s.selected = !s.selected;
+    renderImportSheet();
+  });
+  $('#import-all').addEventListener('change', (e) => {
+    state.importDraft.songs.forEach(s => { s.selected = e.target.checked; });
+    renderImportSheet();
+  });
+  $('#import-setlist').addEventListener('change', (e) => {
+    state.importDraft.makeSetlist = e.target.checked;
+    renderImportSheet();
+  });
+  $('#btn-import-go').addEventListener('click', runImport);
+  $('#btn-import-whole').addEventListener('click', importWholeFile);
+
+  // --- sheets close from their ✕ or by tapping the dimmed backdrop ---
+  $$('[data-close-sheet]').forEach(b => b.addEventListener('click', closeSheets));
+  $$('.sheet').forEach(sheet => sheet.addEventListener('click', (e) => {
+    if (e.target === sheet) closeSheets();
+  }));
   $('#search').addEventListener('input', (e) => { state.search = e.target.value; renderSongList(); });
 
   $$('.tab').forEach(tab => tab.addEventListener('click', () => {
@@ -543,6 +772,8 @@ function wire() {
 
   $('#btn-edit-song').addEventListener('click', () => openEditor(state.song));
   $('#btn-play').addEventListener('click', () => startPlayer(state.song));
+  $('#btn-share-song').addEventListener('click', shareSong);
+  $('#btn-copy-song').addEventListener('click', copySong);
 
   $('#btn-delete-song').addEventListener('click', async () => {
     if (!confirm(`Delete "${state.song.title}"? This cannot be undone.`)) return;
@@ -591,6 +822,8 @@ function wire() {
     await persistSetlist();
   });
 
+  $('#btn-share-setlist').addEventListener('click', shareSetlist);
+
   $('#btn-rename-setlist').addEventListener('click', async () => {
     const name = prompt('Rename setlist', state.setlist.name);
     if (!name) return;
@@ -632,11 +865,6 @@ function wire() {
   });
 
   // --- settings sheet ---
-  $('#btn-close-settings').addEventListener('click', () => $('#sheet-settings').classList.add('hidden'));
-  $('#sheet-settings').addEventListener('click', (e) => {
-    if (e.target.id === 'sheet-settings') $('#sheet-settings').classList.add('hidden');
-  });
-
   $('#d-speed').addEventListener('input', async (e) => {
     state.prefs.defaults.speed = +e.target.value;
     $('#v-dspeed').textContent = e.target.value + ' px/s';
@@ -657,6 +885,7 @@ function wire() {
   }));
 
   $('#btn-export').addEventListener('click', exportLibrary);
+  $('#btn-export-txt').addEventListener('click', exportLibraryText);
   $('#btn-import').addEventListener('click', () => $('#import-file').click());
   $('#import-file').addEventListener('change', (e) => {
     const file = e.target.files && e.target.files[0];

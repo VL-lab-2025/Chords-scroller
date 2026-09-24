@@ -42,8 +42,11 @@
     <ul id="song-list" class="list"></ul>
     <div id="songs-empty" class="empty hidden">
       <p class="empty-title">No songs yet</p>
-      <p>Add a song, then paste a chord chart into it. Plain charts and ChordPro both work.</p>
-      <button id="btn-example" class="btn ghost">Load an example</button>
+      <p>Add a song and paste a chord chart into it, or import .txt files — one song each, or a whole songbook.</p>
+      <div class="empty-actions">
+        <button id="btn-import-empty" class="btn ghost">Import .txt files</button>
+        <button id="btn-example" class="btn ghost">Load an example</button>
+      </div>
     </div>
   </div>
 
@@ -132,6 +135,13 @@
       <div id="song-preview" class="chart preview"></div>
     </div>
 
+    <p class="section-heading">Send to someone</p>
+    <div class="row-buttons">
+      <button id="btn-share-song" class="btn ghost">Share as .txt</button>
+      <button id="btn-copy-song" class="btn ghost">Copy text</button>
+    </div>
+    <p id="share-hint" class="hint"></p>
+
     <div class="danger-zone">
       <button id="btn-delete-song" class="btn danger">Delete song</button>
     </div>
@@ -184,6 +194,10 @@
     <p class="section-heading">Add a song</p>
     <ul id="setlist-available" class="list"></ul>
 
+    <p class="section-heading">Send to the band</p>
+    <button id="btn-share-setlist" class="btn ghost full">Share setlist as .txt</button>
+    <p class="hint">One file with every song, in order, as each is played — it imports back into Chords as the same setlist.</p>
+
     <div class="danger-zone">
       <button id="btn-delete-setlist" class="btn danger">Delete setlist</button>
     </div>
@@ -227,7 +241,7 @@
   <div class="sheet-panel">
     <header class="sheet-head">
       <h2>Settings</h2>
-      <button id="btn-close-settings" class="icon-btn" aria-label="Close">✕</button>
+      <button id="btn-close-settings" class="icon-btn" data-close-sheet aria-label="Close">✕</button>
     </header>
 
     <div class="sheet-body">
@@ -257,12 +271,59 @@
         <button id="btn-import" class="btn ghost">Import backup</button>
       </div>
       <input id="import-file" type="file" accept="application/json,.json" class="hidden">
+      <button id="btn-export-txt" class="btn ghost full">Export all songs as .txt</button>
+      <p class="hint">The backup restores everything, including each song's speed and capo. The .txt holds the songs alone, readable anywhere and importable with ＋.</p>
 
       <p class="section-heading">About</p>
       <p id="storage-info" class="hint"></p>
       <p id="wakelock-info" class="hint"></p>
       <p class="hint">Chords <span id="app-version"></span> — works fully offline.</p>
       <button id="btn-update" class="btn ghost">Check for app update</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Add songs ===================== -->
+<div id="sheet-add" class="sheet hidden">
+  <div class="sheet-panel">
+    <header class="sheet-head">
+      <h2>Add songs</h2>
+      <button class="icon-btn" data-close-sheet aria-label="Close">✕</button>
+    </header>
+    <div class="sheet-body">
+      <button id="btn-add-new" class="action-row">
+        <b>New song</b>
+        <span>Type or paste a chord chart</span>
+      </button>
+      <button id="btn-add-import" class="action-row">
+        <b>Import .txt files</b>
+        <span>One song per file, or a whole songbook — from Files, iCloud Drive or a Telegram download</span>
+      </button>
+    </div>
+  </div>
+</div>
+<input id="txt-file" type="file" accept=".txt,text/plain" multiple class="hidden">
+
+<!-- ===================== Import preview ===================== -->
+<div id="sheet-import" class="sheet hidden">
+  <div class="sheet-panel">
+    <header class="sheet-head">
+      <h2>Import songs</h2>
+      <button class="icon-btn" data-close-sheet aria-label="Cancel import">✕</button>
+    </header>
+    <div class="sheet-body">
+      <p id="import-summary" class="hint"></p>
+      <label class="check-row">
+        <input type="checkbox" id="import-all">
+        <span>Select all</span>
+      </label>
+      <ul id="import-list" class="list check-list"></ul>
+      <label class="check-row" id="import-setlist-row">
+        <input type="checkbox" id="import-setlist">
+        <span id="import-setlist-label"></span>
+      </label>
+      <button id="btn-import-go" class="btn play">Import</button>
+      <button id="btn-import-whole" class="btn ghost full">Wrong split? Import the file as one song</button>
     </div>
   </div>
 </div>
