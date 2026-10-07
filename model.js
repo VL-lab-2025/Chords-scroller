@@ -381,12 +381,17 @@ export function parseSong(text) {
 // ---------------------------------------------------------------------------
 
 /**
- * Split a parsed line into positioned segments for rendering. Each segment is
- * { chord, deco, text }; the chord sits directly above the first character of
- * its text. Chordless runs are split at spaces so long lines can still wrap on
- * a narrow phone screen without breaking chord alignment.
+ * Lay a parsed line out for a narrow screen as wrap units:
+ * [[{ chord, deco, text }, …], …]. Each segment's chord sits directly above
+ * the first character of its text, and a line may wrap only *between* units.
+ *
+ * A unit is a word together with the chords above it, so a chord that sits
+ * mid-word ("hear|t") can never split that word, while a long line can still
+ * break between any two words. A chord written over the gap before a word
+ * starts that word's unit and travels with it; in a chord row with no lyric,
+ * every chord starts a unit, so long chord rows can wrap too.
  */
-export function segmentsFor(line, shift, useFlats, keepWritten = false) {
+export function unitsFor(line, shift, useFlats, keepWritten = false) {
   const chords = [...line.chords].sort((a, b) => a.i - b.i);
   let text = line.text || '';
 
@@ -394,30 +399,52 @@ export function segmentsFor(line, shift, useFlats, keepWritten = false) {
   const maxIndex = chords.length ? chords[chords.length - 1].i : 0;
   if (maxIndex > text.length) text += ' '.repeat(maxIndex - text.length);
 
-  const segments = [];
-  const pushChordless = (chunk) => {
-    if (!chunk) return;
-    // Keep each word with its trailing spaces so wrapping looks natural.
-    const parts = chunk.match(/\S+\s*|\s+/g) || [];
-    for (const p of parts) segments.push({ chord: null, deco: false, text: p });
-  };
+  const isGap = (k) => k >= text.length || /\s/.test(text[k]);
+  const chordAt = new Set(chords.map((c) => c.i));
 
-  if (!chords.length) {
-    if (text) pushChordless(text);
-    return segments;
+  // Where units begin: the line start, every chord over a gap, and every word
+  // start — unless a chord in the gap before that word already began its unit.
+  const starts = new Set([0]);
+  for (const c of chords) if (isGap(c.i)) starts.add(c.i);
+  for (let p = 1; p < text.length; p++) {
+    if (isGap(p) || !isGap(p - 1)) continue; // not the first letter of a word
+    let q = p - 1;
+    while (q > 0 && isGap(q - 1)) q--;
+    let claimed = false;
+    for (let k = q; k < p && !claimed; k++) claimed = chordAt.has(k);
+    if (!claimed) starts.add(p);
   }
 
-  pushChordless(text.slice(0, chords[0].i));
-  for (let k = 0; k < chords.length; k++) {
-    const ch = chords[k];
-    const end = k + 1 < chords.length ? chords[k + 1].i : text.length;
-    segments.push({
-      chord: ch.x ? ch.c : transposeChord(ch.c, shift, useFlats, keepWritten),
-      deco: !!ch.x,
-      text: text.slice(ch.i, end),
+  const bounds = [...starts].sort((a, b) => a - b);
+  const nextOf = new Map(chords.map((c, k) => [c, chords[k + 1] || null]));
+  return bounds.map((a, k) => {
+    const b = k + 1 < bounds.length ? bounds[k + 1] : text.length;
+    // An empty unit at the very end holds a chord written past the lyric.
+    const inside = chords.filter((c) => c.i >= a && (c.i < b || a === b));
+    const segs = [];
+    const first = inside.length ? inside[0].i : b;
+    if (first > a) segs.push({ chord: null, deco: false, text: text.slice(a, first) });
+    inside.forEach((ch, j) => {
+      const end = j + 1 < inside.length ? inside[j + 1].i : b;
+      const next = nextOf.get(ch);
+      segs.push({
+        chord: ch.x ? ch.c : transposeChord(ch.c, shift, useFlats, keepWritten),
+        deco: !!ch.x,
+        text: text.slice(ch.i, Math.max(end, ch.i)),
+        // The lyric this label can float over: up to the next label, across
+        // word boundaries — or, for the last label, to the end of the line.
+        // A label wider than that needs real room (see renderChart).
+        span: next ? text.slice(ch.i, next.i) : text.slice(ch.i),
+        last: !next,
+      });
     });
-  }
-  return segments;
+    return segs;
+  });
+}
+
+/** The same layout as one flat list of segments, in reading order. */
+export function segmentsFor(line, shift, useFlats, keepWritten = false) {
+  return unitsFor(line, shift, useFlats, keepWritten).flat();
 }
 
 /**

@@ -213,17 +213,23 @@ input[type="range"]::-webkit-slider-thumb {
 .danger-zone { margin-top: 34px; }
 
 /* ---------- chord chart rendering ----------
-   Each lyric line is a run of inline-block segments. A segment holds one chord
-   stacked directly above the text it belongs to, so the pair moves together
-   when the line wraps on a narrow screen. Every segment carries a chord slot
+   A lyric line is a run of wrap units (.w), one per word. Inside a unit, each
+   segment holds one chord stacked directly above the text it belongs to.
+   Units are atomic and segments inside them cannot wrap, so a narrow screen
+   breaks lines only between words — never mid-word where a chord sits — and
+   every chord stays above its syllable. Every segment carries a chord slot
    (empty ones included) so baselines stay aligned across the line. */
 .chart { font-size: 20px; line-height: 1.75; }
 .chart .line { margin: 0; }
+.chart .w { display: inline-flex; align-items: flex-end; vertical-align: bottom; white-space: pre; }
 .chart .seg { display: inline-block; vertical-align: bottom; white-space: pre; }
 .chart .ch {
   display: block; height: 1.2em; line-height: 1.2em;
-  color: var(--accent); font-weight: 700; font-size: .82em; padding-right: .7em;
+  color: var(--accent); font-weight: 700; font-size: .82em;
   font-variant-numeric: tabular-nums;
+  /* The label floats over the lyric after it rather than widening its
+     segment; where the next chord is too close, renderChart adds a margin. */
+  width: 0; white-space: nowrap;
 }
 .chart .line.plain { padding-left: 0; }
 .chart .blank { height: .85em; }

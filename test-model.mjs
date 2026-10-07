@@ -1,7 +1,7 @@
 // Sanity tests for the parsing / transposition core.  Run: node test-model.mjs
 import {
   isChordToken, detectFormat, parseSong, transposeChord,
-  segmentsFor, displayShift, useFlatsFor, tonicOf, keyName,
+  segmentsFor, unitsFor, displayShift, useFlatsFor, tonicOf, keyName,
   chordInventory, transposeText, normalizeSpaces, lineKind,
 } from './model.js';
 
@@ -59,12 +59,52 @@ eq('sounding key still Bbm', keyName(tonic.pitch, tonic.minor, true), 'Bbm');
 
 // --- segmentation preserves alignment ---------------------------------------
 const seg = segmentsFor({ t: 'line', text: 'Some lyric line here', chords: [{ i: 0, c: 'Am' }, { i: 10, c: 'F' }] }, 0, false);
-eq('segment chords', seg.map(s => s.chord), ['Am', 'F']);
+eq('segment chords', seg.filter(s => s.chord).map(s => s.chord), ['Am', 'F']);
 eq('segment text rejoins', seg.map(s => s.text).join(''), 'Some lyric line here');
 
 // chord sitting past the end of a short lyric line still renders
 const past = segmentsFor({ t: 'line', text: 'hi', chords: [{ i: 6, c: 'G' }] }, 0, false);
 eq('chord past end of lyric', past[past.length - 1].chord, 'G');
+
+// --- wrap units: a narrow screen breaks lines only between words -------------
+const unitText = (units) => units.map((u) => u.map((s) => s.text).join(''));
+const unitChords = (units) => units.map((u) => u.map((s) => s.chord).filter(Boolean));
+
+//            0         1         2         3
+//            0123456789012345678901234567890123456
+const walk = 'we walk along the river bank at dawn';
+const walkUnits = unitsFor({ t: 'line', text: walk, chords: [
+  { i: 0, c: 'Am' }, { i: 8, c: 'C' }, { i: 20, c: 'G' }, { i: 32, c: 'E' }] }, 0, false);
+eq('one unit per word', unitText(walkUnits), ['we ', 'walk ', 'along ', 'the ', 'river ', 'bank ', 'at ', 'dawn']);
+eq('a chord mid-word stays inside its word', walkUnits[4].map((s) => [s.chord, s.text]), [[null, 'ri'], ['G', 'ver ']]);
+eq('units rejoin to the line', unitText(walkUnits).join(''), walk);
+eq('each label knows the lyric it can float over, across words',
+  walkUnits.flat().filter((s) => s.chord).map((s) => [s.span, s.last]),
+  [['we walk ', false], ['along the ri', false], ['ver bank at ', false], ['dawn', true]]);
+const pastEnd = unitsFor({ t: 'line', text: 'short line', chords: [{ i: 0, c: 'Am' }, { i: 14, c: 'Em(2)' }] }, 0, false);
+eq('a chord past the end of the lyric has nothing to float over', pastEnd.flat().at(-1), { chord: 'Em(2)', deco: false, text: '', span: '', last: true });
+
+// Never a unit boundary between two letters — that is exactly a mid-word break.
+let pos = 0, midWord = 0;
+for (const u of unitText(walkUnits).slice(0, -1)) { pos += u.length; if (/\S/.test(walk[pos - 1]) && /\S/.test(walk[pos])) midWord++; }
+eq('no boundary falls inside a word', midWord, 0);
+
+// A chord written over the gap before a word starts that word's unit.
+const gap = unitsFor({ t: 'line', text: 'some lyric line here', chords: [{ i: 0, c: 'Am' }, { i: 10, c: 'F' }] }, 0, false);
+eq('a chord over a gap travels with the next word', unitText(gap), ['some ', 'lyric', ' line ', 'here']);
+eq('…and leads that unit', gap[2][0].chord, 'F');
+
+// The bug behind lines running off the screen: one chord, then a long line.
+const long = unitsFor({ t: 'line', text: 'one two three four five', chords: [{ i: 0, c: 'Am' }] }, 0, false);
+eq('a long line under one chord can still wrap', unitText(long), ['one ', 'two ', 'three ', 'four ', 'five']);
+
+// A chord row with no lyric wraps between its chords.
+const row = unitsFor({ t: 'line', text: '', chords: [{ i: 0, c: 'Am' }, { i: 6, c: 'F' }, { i: 11, c: 'G' }] }, 0, false);
+eq('chord row: one unit per chord', unitChords(row), [['Am'], ['F'], ['G']]);
+
+// Decorations take part in the layout like chords, and stay flagged.
+const decoUnits = unitsFor({ t: 'line', text: 'some words', chords: [{ i: 0, c: 'Am' }, { i: 5, c: '(2)', x: true }] }, 2, false);
+eq('decorations are laid out but not transposed', decoUnits.flat().filter((s) => s.chord).map((s) => [s.chord, s.deco]), [['Bm', false], ['(2)', true]]);
 
 // --- Russian / German notation and Cyrillic look-alikes ---------------------
 eq('H7 is B7', transposeChord('H7', 0, false), 'B7');

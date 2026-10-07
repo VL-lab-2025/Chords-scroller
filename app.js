@@ -1,7 +1,7 @@
 // app.js — views, wiring, and the chord-chart renderer.
 
 import {
-  parseSong, segmentsFor, displayShift, useFlatsFor,
+  parseSong, unitsFor, displayShift, useFlatsFor,
   tonicOf, keyName, chordInventory, detectFormat,
 } from './model.js';
 import {
@@ -16,7 +16,7 @@ import {
 import { parseRepo, listSongbooks, downloadFile } from './github.js';
 import { createPlayer, wakeLockSupported } from './player.js';
 
-const APP_VERSION = '1.3.0';
+const APP_VERSION = '1.4.0';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -67,10 +67,23 @@ function toast(message, ms = 2400) {
 // Chart rendering
 // ---------------------------------------------------------------------------
 
+// Text is measured on a canvas rather than in the page: songs are often laid
+// out while their view is still hidden, and a hidden element has no layout.
+const measureCtx = document.createElement('canvas').getContext('2d');
+function textWidth(text, font) {
+  measureCtx.font = font;
+  return measureCtx.measureText(text).width;
+}
+
 /**
  * Render a parsed song into `el`. Segments are joined with no whitespace
  * between them — they are inline-blocks, so stray newlines in the markup would
  * become visible gaps in the lyrics.
+ *
+ * Chord labels float over the lyric after them, so a chord on the last letter
+ * of a word leaves no gap. A segment gets a margin only where its label would
+ * not fit: before the next chord (so two labels never overlap), or past the
+ * end of the line (so the last chord wraps instead of running off the screen).
  */
 function renderChart(el, parsed, settings, song) {
   const shift = displayShift(settings.transpose, settings.capo);
@@ -78,6 +91,14 @@ function renderChart(el, parsed, settings, song) {
   // Untransposed, show chords exactly as the author wrote them ("H7" stays
   // "H7"); an explicit ♭/♯ choice respells everything.
   const keep = settings.accidentals === 'auto';
+  const px = settings.fontSize;
+  const family = getComputedStyle(el).fontFamily || 'sans-serif';
+  const lyricFont = `400 ${px}px ${family}`;
+  const chordFont = `700 ${0.82 * px}px ${family}`; // matches .chart .ch
+  const labelGap = 0.45 * px;
+  const shortfall = (s) => (s.chord
+    ? textWidth(s.chord, chordFont) + (s.last ? 0 : labelGap) - textWidth(s.span, lyricFont)
+    : 0);
   const out = [];
 
   for (const line of parsed.lines) {
@@ -92,10 +113,16 @@ function renderChart(el, parsed, settings, song) {
       out.push(`<div class="line plain">${line.text ? esc(line.text) : '&nbsp;'}</div>`);
       continue;
     }
-    const segs = segmentsFor(line, shift, flats, keep)
-      .map(s => `<span class="seg"><span class="ch${s.deco ? ' x' : ''}">${s.chord ? esc(s.chord) : ''}</span>${esc(s.text)}</span>`)
+    // One .w per wrap unit (a word and its chords): the line breaks only
+    // between units, never inside a word.
+    const units = unitsFor(line, shift, flats, keep)
+      .map(unit => `<span class="w">${unit.map(s => {
+        const push = shortfall(s);
+        const style = push > 0.5 ? ` style="margin-right:${push.toFixed(1)}px"` : '';
+        return `<span class="seg"${style}><span class="ch${s.deco ? ' x' : ''}">${s.chord ? esc(s.chord) : ''}</span>${esc(s.text)}</span>`;
+      }).join('')}</span>`)
       .join('');
-    out.push(`<div class="line">${segs}</div>`);
+    out.push(`<div class="line">${units}</div>`);
   }
 
   el.innerHTML = out.join('');

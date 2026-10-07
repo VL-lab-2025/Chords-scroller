@@ -105,6 +105,8 @@ the controls stay hidden before it starts, while it scrolls and while it is
 paused, and the screen stays awake. Tap the text to start or pause, drag to
 find your place, and tap **⋯** in the corner for the controls — speed, font
 size, restart, back. They hide again after a few seconds without a touch.
+On a narrow screen, long lines wrap only between words, and every chord stays
+above its syllable.
 
 **Setlists.** Group songs into an ordered set and play straight through; the
 player shows what's coming next.
@@ -127,7 +129,7 @@ app updates itself.
 **One rule:** whenever you change any file, bump the version in `sw.js`:
 
 ```js
-const CACHE = 'songs-scroll-v6';   // -> v7, v8, ...
+const CACHE = 'songs-scroll-v7';   // -> v8, v9, ...
 ```
 
 That string is what tells installed phones their cached copy is stale. Without
