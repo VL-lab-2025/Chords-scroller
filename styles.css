@@ -263,7 +263,9 @@ input[type="range"]::-webkit-slider-thumb {
 .player-viewport { position: absolute; inset: 0; overflow: hidden; }
 .player-content {
   position: absolute; top: 0; left: 0; right: 0;
-  padding: calc(var(--safe-t) + 68px) calc(var(--safe-r) + 18px) 60vh calc(var(--safe-l) + 18px);
+  /* The controls are hidden while a song is open, so the text can start right
+     below the notch instead of below a bar that is usually not there. */
+  padding: calc(var(--safe-t) + 24px) calc(var(--safe-r) + 18px) 60vh calc(var(--safe-l) + 18px);
   will-change: transform;
   transform: translate3d(0, 0, 0);
 }
@@ -271,9 +273,52 @@ input[type="range"]::-webkit-slider-thumb {
 .player-chrome {
   position: absolute; inset: 0; pointer-events: none;
   display: flex; flex-direction: column; justify-content: space-between;
-  transition: opacity .25s ease;
+  transition: opacity .25s ease, visibility 0s linear 0s;
 }
-.player-chrome.dimmed { opacity: 0; }
+/* Fading alone left the invisible buttons tappable: a tap meant to pause the
+   song could change the font size instead. `visibility` takes them out of hit
+   testing once the fade has finished. */
+.player-chrome.dimmed {
+  opacity: 0; visibility: hidden;
+  transition: opacity .25s ease, visibility 0s linear .25s;
+}
+
+/* Stand-ins for the hidden controls. */
+.player-handle {
+  position: absolute; z-index: 4;
+  right: calc(var(--safe-r) + 14px); bottom: calc(var(--safe-b) + 14px);
+  width: 46px; height: 46px; border-radius: 50%;
+  border: 1px solid var(--line); background: var(--bg-2); color: var(--text);
+  font-size: 22px; line-height: 1; cursor: pointer;
+  opacity: .6; transition: opacity .3s ease;
+}
+.view.player.playing .player-handle { opacity: .3; }
+.player-handle:active { opacity: .95; }
+
+.player-flash {
+  position: absolute; inset: 0; z-index: 5; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 64px; color: var(--blue); opacity: 0;
+  text-shadow: 0 0 30px var(--bg), 0 0 12px var(--bg);
+}
+.player-flash.show { animation: player-flash .7s ease-out; }
+@keyframes player-flash {
+  0% { opacity: 0; transform: scale(.85); }
+  25% { opacity: .9; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.1); }
+}
+
+.player-hint {
+  position: absolute; z-index: 5; pointer-events: none;
+  left: 50%; transform: translateX(-50%);
+  bottom: calc(var(--safe-b) + 74px);
+  width: max-content; max-width: calc(100% - 32px);
+  padding: 10px 16px; border-radius: 14px; text-align: center;
+  font-size: 14px; line-height: 1.5; color: var(--muted);
+  background: var(--bg-3); border: 1px solid var(--line);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .35);
+}
+.player-hint b { color: var(--text); }
 
 .player-top {
   pointer-events: auto; display: flex; align-items: center; gap: 10px;

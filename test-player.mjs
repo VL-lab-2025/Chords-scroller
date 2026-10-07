@@ -149,5 +149,15 @@ const shownY = (content) => {
   player.destroy();
 }
 
+// --- a new player starts at the top, whatever the last one left behind -----
+{
+  // The previous song was scrolled to its end: its offset is still on the element.
+  const viewport = { clientHeight: 800, addEventListener() {}, removeEventListener() {} };
+  const content = { scrollHeight: 2000, style: { transform: 'translate3d(0, -750.00px, 0)' } };
+  const player = createPlayer({ viewport, content, onTick() {}, onEnd() {}, onStateChange() {} });
+  ok('a new player clears a stale scroll offset', shownY(content) === 0, `got ${content.style.transform}`);
+  player.destroy();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

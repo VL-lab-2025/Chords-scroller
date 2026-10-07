@@ -212,7 +212,12 @@
 
   <div id="countdown" class="countdown hidden"><span id="countdown-n">3</span></div>
 
-  <div id="player-chrome" class="player-chrome">
+  <!-- The controls stay hidden while a song is open; these stand in for them. -->
+  <div id="p-flash" class="player-flash" aria-hidden="true"></div>
+  <div id="p-hint" class="player-hint hidden" role="status"></div>
+  <button id="p-handle" class="player-handle" aria-label="Show controls">⋯</button>
+
+  <div id="player-chrome" class="player-chrome dimmed">
     <div class="player-top">
       <button class="icon-btn back" data-back="song" aria-label="Back">‹</button>
       <div class="player-meta">

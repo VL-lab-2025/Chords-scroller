@@ -16,7 +16,7 @@ import {
 import { parseRepo, listSongbooks, downloadFile } from './github.js';
 import { createPlayer, wakeLockSupported } from './player.js';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -338,9 +338,17 @@ async function persistSetlist() {
 
 // ---------------------------------------------------------------------------
 // Player
+//
+// While a song is open the screen belongs to the song: the controls stay
+// hidden before it starts, while it scrolls and while it is paused. Tapping
+// the text starts or pauses; the ⋯ button brings the controls back, and they
+// tuck themselves away again after a few seconds without a touch.
 // ---------------------------------------------------------------------------
 
-let chromeTimer = null;
+const CONTROLS_IDLE_MS = 4000;
+let controlsTimer = null;
+let controlsVisible = false;
+let hintTimer = null;
 
 function startPlayer(song, { setlist = null, index = -1 } = {}) {
   state.song = song;
@@ -353,6 +361,7 @@ function startPlayer(song, { setlist = null, index = -1 } = {}) {
   renderChart(content, state.parsed, s, song);
 
   $('#player-title').textContent = song.title;
+  $('#progress-fill').style.width = '0%'; // not the last song's progress
   $('#player-key').textContent = stripTags(keyReadout(song, state.parsed, s));
   $('#p-speed-readout').textContent = `${s.speed} px/s`;
   $('#p-next').textContent = nextInSetlist() ? `Next: ${nextInSetlist().title}` : '';
@@ -363,6 +372,7 @@ function startPlayer(song, { setlist = null, index = -1 } = {}) {
   // wait for here. Creating the player synchronously matters: waiting on
   // requestAnimationFrame would never resolve if the app is backgrounded
   // between pressing play and the first frame, leaving dead controls.
+  let wasPlaying = false;
   const player = createPlayer({
     viewport: $('#player-viewport'),
     content,
@@ -378,18 +388,25 @@ function startPlayer(song, { setlist = null, index = -1 } = {}) {
     },
     onStateChange: (st) => {
       $('#p-toggle').textContent = st.playing ? '❚❚' : '▶';
+      $('#view-player').classList.toggle('playing', st.playing);
       if (!st.playing) $('#countdown').classList.add('hidden');
-      st.playing ? scheduleChromeDim() : revealChrome();
+      // This also fires for every speed or position change; only the moment
+      // scrolling starts should put the controls away, or adjusting the speed
+      // would hide them mid-adjustment.
+      if (st.playing && !wasPlaying) hideControls();
+      wasPlaying = st.playing;
     },
     onEnd: () => {
-      revealChrome();
+      showControls({ stay: true }); // the song is over: back, restart or next
       const next = nextInSetlist();
       toast(next ? `End of song — next: ${next.title}` : 'End of song');
     },
   });
   player.setSpeed(s.speed);
   state.player = player;
-  revealChrome();
+
+  hideControls();
+  showHint(`${keyReadout(song, state.parsed, s)}<br><b>Tap the text to start</b> · ⋯ shows the controls`);
 }
 
 const stripTags = (html) => html.replace(/<[^>]*>/g, '');
@@ -400,17 +417,43 @@ function nextInSetlist() {
   return nextId ? state.songs.find(s => s.id === nextId) || null : null;
 }
 
-function scheduleChromeDim() {
-  clearTimeout(chromeTimer);
-  chromeTimer = setTimeout(() => {
-    if (state.player && state.player.state.playing) $('#player-chrome').classList.add('dimmed');
-  }, 2600);
+/** Bring the controls up; they hide again after a pause in touching them. */
+function showControls({ stay = false } = {}) {
+  controlsVisible = true;
+  hideHint();
+  $('#player-chrome').classList.remove('dimmed');
+  $('#p-handle').classList.add('hidden');
+  clearTimeout(controlsTimer);
+  if (!stay) controlsTimer = setTimeout(hideControls, CONTROLS_IDLE_MS);
 }
 
-function revealChrome() {
-  clearTimeout(chromeTimer);
-  $('#player-chrome').classList.remove('dimmed');
-  if (state.player && state.player.state.playing) scheduleChromeDim();
+function hideControls() {
+  controlsVisible = false;
+  clearTimeout(controlsTimer);
+  $('#player-chrome').classList.add('dimmed');
+  $('#p-handle').classList.remove('hidden');
+}
+
+/** A brief ▶ or ❚❚ mid-screen: feedback for a tap without the controls. */
+function flashState(symbol) {
+  const el = $('#p-flash');
+  el.textContent = symbol;
+  el.classList.remove('show');
+  void el.offsetWidth; // restart the animation if it is still running
+  el.classList.add('show');
+}
+
+function showHint(html) {
+  const el = $('#p-hint');
+  el.innerHTML = html;
+  el.classList.remove('hidden');
+  clearTimeout(hintTimer);
+  hintTimer = setTimeout(hideHint, 4500);
+}
+
+function hideHint() {
+  clearTimeout(hintTimer);
+  $('#p-hint').classList.add('hidden');
 }
 
 function adjustPlayerSetting(key, delta, min, max) {
@@ -423,7 +466,7 @@ function adjustPlayerSetting(key, delta, min, max) {
   } else {
     renderChart($('#player-content'), state.parsed, s, state.song);
   }
-  revealChrome();
+  showControls(); // keep them up while they are being used
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => saveSong(state.song), 500);
 }
@@ -1003,17 +1046,26 @@ function wire() {
   });
 
   // --- player ---
+  // Tapping the text starts or pauses. If the controls are showing, the tap
+  // only puts them away, so a tap meant to clear them never stops the song.
   $('#player-viewport').addEventListener('click', () => {
     if (!state.player || state.player.wasDrag()) return;
+    hideHint();
+    if (controlsVisible) { hideControls(); return; }
     state.player.toggle(state.song.settings.leadIn);
-    revealChrome();
+    const st = state.player.state;
+    if (!st.playing) flashState('❚❚');
+    else if (!st.leadIn) flashState('▶'); // with a lead-in, the countdown is the feedback
   });
+  $('#p-handle').addEventListener('click', () => showControls());
 
   $('#p-toggle').addEventListener('click', (e) => {
     e.stopPropagation();
     if (!state.player) return;
     state.player.toggle(state.song.settings.leadIn);
-    revealChrome();
+    // Starting puts the controls away (see onStateChange); pausing from here
+    // usually means something is about to be adjusted, so they stay a while.
+    if (!state.player.state.playing) showControls();
   });
   $('#p-slower').addEventListener('click', () => adjustPlayerSetting('speed', -2, 4, 200));
   $('#p-faster').addEventListener('click', () => adjustPlayerSetting('speed', 2, 4, 200));
@@ -1022,7 +1074,7 @@ function wire() {
   $('#btn-restart').addEventListener('click', () => {
     if (!state.player) return;
     state.player.reset();
-    revealChrome();
+    showControls();
   });
 
   // --- settings sheet ---

@@ -157,6 +157,11 @@ export function createPlayer({ viewport, content, onTick, onEnd, onStateChange }
   /** True if the last touch was a drag rather than a tap (so taps can toggle). */
   const wasDrag = () => dragMoved > 6;
 
+  // The content element outlives each player: without this, a song opened
+  // after another was scrolled would sit at the old offset — often the blank
+  // space past the end — until play was pressed.
+  apply();
+
   function destroy() {
     pause();
     viewport.removeEventListener('touchstart', onTouchStart);

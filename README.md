@@ -100,9 +100,11 @@ Sharps versus flats are chosen from the resulting key, so you get `Bbm` rather
 than `A#m`. Override per song with the ♭/♯ buttons.
 
 **Playing.** Each song remembers its own speed, font size, spacing, transpose,
-capo and lead-in. Tap **Start scrolling**; the screen stays awake and the
-controls fade out. Tap anywhere to pause or resume, drag to find your place,
-and use −/＋ to adjust speed mid-song.
+capo and lead-in. Tap **Start scrolling** and the screen shows only the song:
+the controls stay hidden before it starts, while it scrolls and while it is
+paused, and the screen stays awake. Tap the text to start or pause, drag to
+find your place, and tap **⋯** in the corner for the controls — speed, font
+size, restart, back. They hide again after a few seconds without a touch.
 
 **Setlists.** Group songs into an ordered set and play straight through; the
 player shows what's coming next.
@@ -125,7 +127,7 @@ app updates itself.
 **One rule:** whenever you change any file, bump the version in `sw.js`:
 
 ```js
-const CACHE = 'songs-scroll-v5';   // -> v6, v7, ...
+const CACHE = 'songs-scroll-v6';   // -> v7, v8, ...
 ```
 
 That string is what tells installed phones their cached copy is stale. Without
