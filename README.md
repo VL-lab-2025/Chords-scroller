@@ -111,6 +111,11 @@ above its syllable.
 **Setlists.** Group songs into an ordered set and play straight through; the
 player shows what's coming next.
 
+**Counts.** The Songs and Setlists tabs show how many of each you have, and a
+search says how many songs match. Each song shows its length in sung lines —
+chord-only rows, notes such as `Бой 2`, headings and blank lines don't count,
+so a song has the same length whichever way its chords are written.
+
 ## Back up your songs
 
 Settings → **Export library** writes a JSON file (via the iOS share sheet, so
@@ -129,7 +134,7 @@ app updates itself.
 **One rule:** whenever you change any file, bump the version in `sw.js`:
 
 ```js
-const CACHE = 'songs-scroll-v7';   // -> v8, v9, ...
+const CACHE = 'songs-scroll-v8';   // -> v9, v10, ...
 ```
 
 That string is what tells installed phones their cached copy is stale. Without

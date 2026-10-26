@@ -2,7 +2,7 @@
 
 import {
   parseSong, unitsFor, displayShift, useFlatsFor,
-  tonicOf, keyName, chordInventory, detectFormat,
+  tonicOf, keyName, chordInventory, detectFormat, lyricLineCount,
 } from './model.js';
 import {
   DEFAULT_SETTINGS, getSongs, getSong, saveSong, deleteSong,
@@ -16,7 +16,7 @@ import {
 import { parseRepo, listSongbooks, downloadFile } from './github.js';
 import { createPlayer, wakeLockSupported } from './player.js';
 
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -159,49 +159,75 @@ async function refreshLibrary() {
   renderSetlistList();
 }
 
+/** A count beside a tab's name, hidden while there is nothing to count. */
+function setCount(selector, n) {
+  const el = $(selector);
+  el.textContent = String(n);
+  el.classList.toggle('hidden', !n);
+}
+
+/** "26 lines", or nothing for a song with no sung lines (chords only). */
+const linesLabel = (n) => (n ? plural(n, 'line') : '');
+
 function renderSongList() {
   const q = state.search.trim().toLowerCase();
   const items = state.songs.filter(s =>
     !q || s.title.toLowerCase().includes(q) || (s.artist || '').toLowerCase().includes(q));
+  const total = state.songs.length;
 
-  $('#songs-empty').classList.toggle('hidden', state.songs.length > 0);
+  $('#songs-empty').classList.toggle('hidden', total > 0);
+  setCount('#songs-count', total);
+  // While searching, say how much of the library the list is showing.
+  const found = $('#search-count');
+  found.classList.toggle('hidden', !q);
+  if (q) {
+    found.textContent = items.length
+      ? `${items.length} of ${plural(total, 'song')}`
+      : `No songs match “${state.search.trim()}”`;
+  }
+
   $('#song-list').innerHTML = items.map(s => {
-    const bits = [s.artist, s.settings.capo ? `capo ${s.settings.capo}` : null]
+    const meta = songMeta(s);
+    const bits = [s.artist, s.settings.capo ? `capo ${s.settings.capo}` : null, linesLabel(meta.lines)]
       .filter(Boolean).join(' · ');
-    const parsedKey = songKeyLabel(s);
     return `<li data-song="${esc(s.id)}">
       <div class="item-main">
         <div class="item-title">${esc(s.title)}</div>
         ${bits ? `<div class="item-sub">${esc(bits)}</div>` : ''}
       </div>
-      ${parsedKey ? `<span class="chip">${esc(parsedKey)}</span>` : ''}
+      ${meta.key ? `<span class="chip">${esc(meta.key)}</span>` : ''}
     </li>`;
   }).join('');
 }
 
 // Search re-renders the list on every keystroke; parsing every song each time
 // is wasted work. Any edit or settings change bumps updatedAt, so it keys this.
-const keyLabelCache = new Map();
+const songMetaCache = new Map();
 
-/** The chord the player will actually finger first — shown as the list badge. */
-function songKeyLabel(song) {
+/**
+ * What the list shows about a song, from one parse: the chord the player will
+ * actually finger first (the badge) and the song's length in sung lines.
+ */
+function songMeta(song) {
   const cacheKey = `${song.id}:${song.updatedAt}`;
-  if (keyLabelCache.has(cacheKey)) return keyLabelCache.get(cacheKey);
-  let label = '';
+  if (songMetaCache.has(cacheKey)) return songMetaCache.get(cacheKey);
+  const meta = { key: '', lines: 0 };
   try {
     const parsed = parseSong(song.body);
+    meta.lines = lyricLineCount(parsed);
     const tonic = tonicOf(song, parsed);
     if (tonic) {
       const shift = displayShift(song.settings.transpose, song.settings.capo);
       const flats = useFlatsFor(song, parsed, shift, song.settings.accidentals);
-      label = keyName(tonic.pitch + shift, tonic.minor, flats);
+      meta.key = keyName(tonic.pitch + shift, tonic.minor, flats);
     }
   } catch { /* an unparseable song simply gets no badge */ }
-  keyLabelCache.set(cacheKey, label);
-  return label;
+  songMetaCache.set(cacheKey, meta);
+  return meta;
 }
 
 function renderSetlistList() {
+  setCount('#setlists-count', state.setlists.length);
   $('#setlists-empty').classList.toggle('hidden', state.setlists.length > 0);
   $('#setlist-list').innerHTML = state.setlists.map(sl => `
     <li data-setlist="${esc(sl.id)}">
@@ -222,7 +248,8 @@ async function openSong(id, { push = true } = {}) {
   state.song = song;
   state.parsed = parseSong(song.body);
   $('#song-title').textContent = song.title;
-  $('#song-artist').textContent = song.artist || '';
+  $('#song-artist').textContent = [song.artist, linesLabel(lyricLineCount(state.parsed))]
+    .filter(Boolean).join(' · ');
   syncSongControls();
   show('song', { push });
 }
@@ -337,10 +364,11 @@ function renderSetlistDetail() {
   $('#setlist-empty').classList.toggle('hidden', inSet.length > 0);
   $('#setlist-songs').innerHTML = inSet.map((id, i) => {
     const s = byId.get(id);
+    const sub = [s.artist, linesLabel(songMeta(s).lines)].filter(Boolean).join(' · ');
     return `<li data-play="${esc(id)}">
       <div class="item-main">
         <div class="item-title">${i + 1}. ${esc(s.title)}</div>
-        ${s.artist ? `<div class="item-sub">${esc(s.artist)}</div>` : ''}
+        ${sub ? `<div class="item-sub">${esc(sub)}</div>` : ''}
       </div>
       <button class="row-btn" data-move="${esc(id)}" data-dir="-1" aria-label="Move up">↑</button>
       <button class="row-btn" data-move="${esc(id)}" data-dir="1" aria-label="Move down">↓</button>
@@ -633,7 +661,10 @@ async function prepareImport(items) {
       if (!s.body.trim()) continue;
       const mine = known.get(songKey(s.title, s.artist));
       const status = !mine ? 'new' : sameSongText(mine.body, s.body) ? 'same' : 'changed';
-      draft.songs.push({ ...s, status, existingId: mine ? mine.id : null, selected: status === 'new' });
+      draft.songs.push({
+        ...s, status, existingId: mine ? mine.id : null, selected: status === 'new',
+        lines: lyricLineCount(parseSong(s.body)), // a 2-line "song" usually means a bad split
+      });
     }
   }
   if (!draft.songs.length) { toast('No songs found in that file'); return; }
@@ -675,7 +706,7 @@ function renderImportSheet() {
       <span class="tick" aria-hidden="true">${s.selected ? '✓' : ''}</span>
       <div class="item-main">
         <div class="item-title">${esc(s.title)}</div>
-        <div class="item-sub">${esc([s.artist, note[s.status]].filter(Boolean).join(' · '))}</div>
+        <div class="item-sub">${esc([s.artist, linesLabel(s.lines), note[s.status]].filter(Boolean).join(' · '))}</div>
       </div>
     </li>`).join('');
   const selectable = d.songs.filter(s => s.status !== 'same');

@@ -448,6 +448,15 @@ export function segmentsFor(line, shift, useFlats, keepWritten = false) {
 }
 
 /**
+ * How long a song is, in the lines you actually sing. Chord-only rows, notes
+ * such as "Бой 2", headings and blank lines don't count — so a song gets the
+ * same number whether its chords are written above the lyrics or inline.
+ */
+export function lyricLineCount(parsed) {
+  return parsed.lines.filter((l) => l.t === 'line' && l.text.trim()).length;
+}
+
+/**
  * The net semitone shift applied to written chords for display.
  * Sounding pitch  = written + transpose
  * Fingered shape  = sounding - capo   ← what the player actually sees

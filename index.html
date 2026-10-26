@@ -33,12 +33,13 @@
   </header>
 
   <div class="tabs" role="tablist">
-    <button class="tab active" data-tab="songs" role="tab">Songs</button>
-    <button class="tab" data-tab="setlists" role="tab">Setlists</button>
+    <button class="tab active" data-tab="songs" role="tab">Songs <span id="songs-count" class="count hidden"></span></button>
+    <button class="tab" data-tab="setlists" role="tab">Setlists <span id="setlists-count" class="count hidden"></span></button>
   </div>
 
   <div id="pane-songs" class="pane active">
     <input id="search" class="search" type="search" placeholder="Search songs or artists" autocomplete="off">
+    <p id="search-count" class="search-count hidden" role="status"></p>
     <ul id="song-list" class="list"></ul>
     <div id="songs-empty" class="empty hidden">
       <p class="empty-title">No songs yet</p>

@@ -2,7 +2,7 @@
 import {
   isChordToken, detectFormat, parseSong, transposeChord,
   segmentsFor, unitsFor, displayShift, useFlatsFor, tonicOf, keyName,
-  chordInventory, transposeText, normalizeSpaces, lineKind,
+  chordInventory, transposeText, normalizeSpaces, lineKind, lyricLineCount,
 } from './model.js';
 
 let pass = 0, fail = 0;
@@ -105,6 +105,13 @@ eq('chord row: one unit per chord', unitChords(row), [['Am'], ['F'], ['G']]);
 // Decorations take part in the layout like chords, and stay flagged.
 const decoUnits = unitsFor({ t: 'line', text: 'some words', chords: [{ i: 0, c: 'Am' }, { i: 5, c: '(2)', x: true }] }, 2, false);
 eq('decorations are laid out but not transposed', decoUnits.flat().filter((s) => s.chord).map((s) => [s.chord, s.deco]), [['Bm', false], ['(2)', true]]);
+
+// --- song length in sung lines ------------------------------------------------
+const plainSong = 'Бой 2\nAm        C\nfirst sung line\n\nПрипев:\nF     G\nsecond sung line\nthird, no chords\nAm  E\n';
+eq('counts sung lines only', lyricLineCount(parseSong(plainSong)), 3);
+eq('same song inline (ChordPro) counts the same',
+  lyricLineCount(parseSong('{title: x}\n[Am]first sung line\n\n[F]second sung line\nthird, no chords')), 3);
+eq('an empty song has no lines', lyricLineCount(parseSong('')), 0);
 
 // --- Russian / German notation and Cyrillic look-alikes ---------------------
 eq('H7 is B7', transposeChord('H7', 0, false), 'B7');
