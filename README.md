@@ -50,6 +50,45 @@ with Cyrillic look-alike letters (`С`, `Е`) are understood, and strumming note
 such as `Бой 2` are shown as notes. Repeat marks, bar lines and strum arrows in
 a chord row (`(2)`, `x2`, `|`, `↓`) stay where they were written.
 
+**Editing a song** — tap ✎ on a song. Nothing you do there can be lost by
+accident:
+
+- **↶ Undo / ↷ Redo** step back and forward through your changes, as many
+  steps as you like — a burst of typing, a paste or one tool action at a time.
+  Deleting a selection, such as several lines at once, is always its own step,
+  so one Undo brings exactly those lines back. Ctrl/⌘+Z and Ctrl/⌘+Shift+Z
+  work with a keyboard.
+- **Revert** goes back to the text as it was last saved. Revert can be undone
+  too.
+- **The line under the tools** counts the lines of text and turns red the
+  moment it has fewer than the saved song — *52 lines of text · 2 fewer than
+  saved*. **Compare** shows the saved text with the missing lines highlighted,
+  and can revert to it.
+- **Leaving with unsaved changes** asks whether to save, discard or keep
+  editing. Discarding shows an Undo for a few seconds.
+- **The edit in progress is kept as a draft** while you type. If iOS closes
+  the app, or the battery dies, the next launch offers to continue where you
+  were.
+
+The tools row also has **Chords** (the song's own chords, common ones, and
+headings such as `Припев:` and `Бой 2` — a tap puts one in at the cursor, and
+chords already on the line keep their columns), **Lines** (duplicate, move up
+or down, delete — on the cursor's line or every selected line), **Find**
+(find and replace, with or without matching case) and **Preview** (the chart as
+the player will lay it out).
+
+**Version history** — every time a song's words change, the text from before
+is kept: Save, an import that updates the song, or restoring an old version.
+On a song, *Version history* lists the last 30, each with how many of its lines
+the current text no longer has; open one to see those lines highlighted, and
+restore it if you need to. Restoring keeps the text it replaces as a version
+too, so nothing is ever overwritten for good.
+
+**Recently deleted** — a deleted song goes to *Recently deleted* (at the bottom
+of the song list) for 30 days, with its history and its places in setlists, and
+can be restored from there. Right after deleting, the message at the bottom has
+an Undo.
+
 **Importing .txt files** — ＋ → *Import .txt files*, then pick files from Files,
 iCloud Drive or a Telegram download. A file can hold one song or a whole
 songbook. Songbooks are split at each song's title line — `Title, Artist`,
@@ -124,7 +163,8 @@ including each song's speed, font size and capo. **Export all songs as .txt**
 writes the songs alone as one readable songbook.
 
 Do this occasionally. iOS can evict web-app storage, and the export is the only
-copy that exists off the device.
+copy that exists off the device. A backup holds the songs as they are now —
+version history and Recently deleted stay on the phone.
 
 ## Changing the app later
 
@@ -134,7 +174,7 @@ app updates itself.
 **One rule:** whenever you change any file, bump the version in `sw.js`:
 
 ```js
-const CACHE = 'songs-scroll-v8';   // -> v9, v10, ...
+const CACHE = 'songs-scroll-v9';   // -> v10, v11, ...
 ```
 
 That string is what tells installed phones their cached copy is stale. Without
@@ -166,8 +206,10 @@ npm test
 
 Covers the areas with real logic: chord parsing and transposition
 (`test-model.mjs`), reading and writing .txt songbooks (`test-songbook.mjs`),
-the GitHub download client against a fake network (`test-github.mjs`) and the
-scroll engine's timing (`test-player.mjs`).
+the GitHub download client against a fake network (`test-github.mjs`), the
+scroll engine's timing (`test-player.mjs`) and the editor's undo history, line
+tools, chord insertion, find & replace and version comparison
+(`test-edit.mjs`).
 
 **Keep songbooks out of the repo.** The repo is public, and song lyrics are
 usually copyrighted. Put personal files in `data/`, which is gitignored, and
@@ -180,7 +222,8 @@ never commit them — test fixtures here use invented text only.
 | `model.js` | chord grammar, both input formats, transposition, render model |
 | `songbook.js` | reading and writing .txt files: encodings, splitting, formatting |
 | `github.js` | downloading songbooks from a GitHub repository |
-| `store.js` | IndexedDB persistence, export/import |
+| `store.js` | IndexedDB persistence, version history, Recently deleted, drafts, export/import |
+| `edit.js` | editor operations: undo history, line tools, find & replace, comparing versions |
 | `player.js` | scroll engine, wake lock |
 | `app.js` | views and wiring |
 | `sw.js` | offline cache |

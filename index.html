@@ -49,6 +49,7 @@
         <button id="btn-example" class="btn ghost">Load an example</button>
       </div>
     </div>
+    <button id="btn-open-trash" class="link-row hidden"></button>
   </div>
 
   <div id="pane-setlists" class="pane">
@@ -143,6 +144,10 @@
     </div>
     <p id="share-hint" class="hint"></p>
 
+    <p class="section-heading">Earlier versions</p>
+    <button id="btn-history" class="btn ghost full">Version history</button>
+    <p id="history-count" class="hint"></p>
+
     <div class="danger-zone">
       <button id="btn-delete-song" class="btn danger">Delete song</button>
     </div>
@@ -156,23 +161,72 @@
 <!-- ===================== Editor ===================== -->
 <section id="view-editor" class="view">
   <header class="bar">
-    <button class="icon-btn back" data-back="song" aria-label="Cancel">‹</button>
-    <div class="bar-title"><h2>Edit song</h2></div>
+    <button id="btn-editor-back" class="icon-btn back" aria-label="Back">‹</button>
+    <div class="bar-title"><h2 id="editor-heading">Edit song</h2></div>
     <div class="bar-actions">
+      <button id="ed-undo" class="icon-btn keep-focus" aria-label="Undo" disabled>↶</button>
+      <button id="ed-redo" class="icon-btn keep-focus" aria-label="Redo" disabled>↷</button>
       <button id="btn-save-song" class="btn small primary">Save</button>
     </div>
   </header>
+
+  <!-- Tool buttons carry .keep-focus: tapping them leaves the keyboard up. -->
+  <div class="edit-toolbar" role="toolbar" aria-label="Editing tools">
+    <button id="ed-revert" class="tool keep-focus">Revert</button>
+    <button class="tool keep-focus" data-panel="chords" aria-expanded="false">Chords</button>
+    <button class="tool keep-focus" data-panel="lines" aria-expanded="false">Lines</button>
+    <button class="tool" data-panel="find" aria-expanded="false">Find</button>
+    <button id="ed-preview" class="tool" aria-pressed="false">Preview</button>
+  </div>
+
+  <div id="ed-panel-chords" class="edit-panel hidden">
+    <p class="panel-label">In this song</p>
+    <div id="ed-song-chords" class="chip-row"></div>
+    <p class="panel-label">Common</p>
+    <div id="ed-common-chords" class="chip-row"></div>
+    <p class="panel-label">Headings and notes</p>
+    <div id="ed-headings" class="chip-row"></div>
+    <p class="panel-label">A chord goes in at the cursor — put it on the chord line above the words (ChordPro songs get it in [brackets]). A heading goes in above the cursor's line.</p>
+  </div>
+  <div id="ed-panel-lines" class="edit-panel hidden">
+    <div class="chip-row">
+      <button class="chip-btn keep-focus" data-line="duplicate">Duplicate</button>
+      <button class="chip-btn keep-focus" data-line="up">Move up</button>
+      <button class="chip-btn keep-focus" data-line="down">Move down</button>
+      <button class="chip-btn keep-focus danger" data-line="delete">Delete line</button>
+    </div>
+    <p class="panel-label">Acts on the line the cursor is on, or every selected line.</p>
+  </div>
+  <div id="ed-panel-find" class="edit-panel hidden">
+    <div class="find-row">
+      <input id="ed-find" type="search" placeholder="Find" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <input id="ed-replace" type="text" placeholder="Replace with" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
+    </div>
+    <div class="find-row">
+      <label class="match-case"><input id="ed-case" type="checkbox" checked> Match case</label>
+      <span id="ed-find-count" class="find-count"></span>
+      <button id="ed-find-next" class="chip-btn keep-focus">Next</button>
+      <button id="ed-replace-one" class="chip-btn keep-focus">Replace</button>
+      <button id="ed-replace-all" class="chip-btn keep-focus">All</button>
+    </div>
+  </div>
+
+  <div id="ed-status-bar" class="edit-status">
+    <span id="ed-status" role="status"></span>
+    <button id="ed-compare" class="status-link hidden">Compare</button>
+  </div>
 
   <div class="scroll-body">
     <label class="field"><span>Title</span><input id="f-title" type="text" placeholder="Song title" autocomplete="off"></label>
     <label class="field"><span>Artist</span><input id="f-artist" type="text" placeholder="Artist" autocomplete="off"></label>
     <label class="field"><span>Key <i>(optional — improves ♯/♭ spelling)</i></span><input id="f-key" type="text" placeholder="e.g. Am, G, Bbm" autocomplete="off"></label>
 
-    <label class="field">
+    <label class="field" id="ed-text-field">
       <span>Chords &amp; lyrics <b id="format-badge" class="badge"></b></span>
       <textarea id="f-body" spellcheck="false" autocapitalize="off" autocorrect="off"
         placeholder="Paste a chord chart here.&#10;&#10;Am        F&#10;Some lyric line here&#10;&#10;— or ChordPro —&#10;&#10;[Am]Some [F]lyric line here"></textarea>
     </label>
+    <div id="ed-preview-pane" class="chart preview-live hidden"></div>
     <p class="hint">Format is detected automatically. Plain charts keep chords on the line above; ChordPro puts them inline in square brackets.</p>
   </div>
 </section>
@@ -368,6 +422,68 @@
       </label>
       <button id="btn-import-go" class="btn play">Import</button>
       <button id="btn-import-whole" class="btn ghost full">Wrong split? Import the file as one song</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Leaving the editor with unsaved changes ===================== -->
+<div id="sheet-unsaved" class="sheet hidden">
+  <div class="sheet-panel">
+    <header class="sheet-head"><h2>Unsaved changes</h2></header>
+    <div class="sheet-body stack">
+      <p id="unsaved-summary" class="hint"></p>
+      <button id="btn-unsaved-save" class="btn play">Save changes</button>
+      <button id="btn-unsaved-discard" class="btn danger">Discard changes</button>
+      <button id="btn-unsaved-keep" class="btn ghost full">Keep editing</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== An edit left unsaved last time ===================== -->
+<div id="sheet-draft" class="sheet hidden" data-modal>
+  <div class="sheet-panel">
+    <header class="sheet-head"><h2>Unsaved edit found</h2></header>
+    <div class="sheet-body stack">
+      <p id="draft-summary" class="hint"></p>
+      <button id="btn-draft-restore" class="btn play">Continue editing</button>
+      <button id="btn-draft-discard" class="btn danger">Discard it</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Version history ===================== -->
+<div id="sheet-history" class="sheet hidden">
+  <div class="sheet-panel">
+    <header class="sheet-head">
+      <h2 id="history-title">Version history</h2>
+      <button class="icon-btn" data-close-sheet aria-label="Close">✕</button>
+    </header>
+    <div class="sheet-body">
+      <div id="history-list-view">
+        <p id="history-hint" class="hint"></p>
+        <ul id="history-list" class="list"></ul>
+      </div>
+      <div id="history-detail" class="hidden stack">
+        <p id="history-detail-summary" class="hint"></p>
+        <pre id="history-detail-text" class="version-text"></pre>
+        <button id="btn-history-restore" class="btn play">Restore this version</button>
+        <button id="btn-history-back" class="btn ghost full">All versions</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== Recently deleted ===================== -->
+<div id="sheet-trash" class="sheet hidden">
+  <div class="sheet-panel">
+    <header class="sheet-head">
+      <h2>Recently deleted</h2>
+      <button class="icon-btn" data-close-sheet aria-label="Close">✕</button>
+    </header>
+    <div class="sheet-body stack">
+      <p class="hint">Deleted songs stay here for 30 days, with their version history, then they are removed for good.</p>
+      <ul id="trash-list" class="list"></ul>
+      <button id="btn-trash-empty" class="btn danger">Delete all now</button>
     </div>
   </div>
 </div>

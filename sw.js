@@ -2,7 +2,7 @@
 //
 // Bump CACHE whenever you change any file below, otherwise phones that already
 // installed the app will keep serving the old copy from disk.
-const CACHE = 'songs-scroll-v8';
+const CACHE = 'songs-scroll-v9';
 
 // Relative paths only: the app must work from a GitHub Pages subdirectory.
 const ASSETS = [
@@ -15,6 +15,7 @@ const ASSETS = [
   './github.js',
   './store.js',
   './player.js',
+  './edit.js',
   './manifest.json',
   './icons/icon-180.png',
   './icons/icon-192.png',

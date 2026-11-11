@@ -5,18 +5,24 @@ import {
   tonicOf, keyName, chordInventory, detectFormat, lyricLineCount,
 } from './model.js';
 import {
-  DEFAULT_SETTINGS, getSongs, getSong, saveSong, deleteSong,
+  DEFAULT_SETTINGS, getSongs, getSong, saveSong,
   getSetlists, getSetlist, saveSetlist, deleteSetlist,
   getPrefs, savePrefs, exportAll, importAll,
   storageEstimate, requestPersistence, getGithubConfig, saveGithubConfig,
+  getVersions, trashSong, restoreSong, purgeSong, getTrash, TRASH_DAYS,
+  getDraft, saveDraft, clearDraft,
 } from './store.js';
 import {
   decodeBytes, splitSongbook, formatSong, formatSongbook, songKey, safeFilename, sameSongText,
 } from './songbook.js';
 import { parseRepo, listSongbooks, downloadFile } from './github.js';
+import {
+  EditHistory, selectedLineRange, duplicateLines, moveLines, deleteLines, insertChord, insertLine,
+  findAll, findNext, replaceOne, replaceAll, compareLines,
+} from './edit.js';
 import { createPlayer, wakeLockSupported } from './player.js';
 
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '1.6.0';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -32,16 +38,25 @@ const state = {
   parsed: null,        // parsed form of state.song
   setlist: null,       // active setlist, if playing through one
   setlistIndex: -1,
-  editingId: null,
   player: null,
   search: '',
   history: [],
   importDraft: null,   // songs read from .txt files, awaiting confirmation
+  pendingDraft: null,  // an unsaved edit found on launch, awaiting a decision
 };
 
 // ---------------------------------------------------------------------------
 // Navigation
 // ---------------------------------------------------------------------------
+
+/** Back to the view we came from, refreshed: settings may have changed meanwhile. */
+function goBack(fallback) {
+  const target = state.history.pop() || fallback;
+  show(target, { push: false });
+  if (target === 'library') refreshLibrary();
+  else if (target === 'song' && state.song) syncSongControls();
+  else if (target === 'setlist' && state.setlist) renderSetlistDetail();
+}
 
 function show(name, { push = true } = {}) {
   const current = $$('.view.active')[0];
@@ -55,12 +70,24 @@ function show(name, { push = true } = {}) {
   }
 }
 
-function toast(message, ms = 2400) {
+/**
+ * A brief message at the bottom of the screen, optionally with one action —
+ * "Undo" after anything that removes something. A toast with an action stays
+ * up longer, so there is time to reach it.
+ */
+function toast(message, { ms = 2400, action = '', onAction = null } = {}) {
   const el = $('#toast');
-  el.textContent = message;
+  el.replaceChildren(document.createTextNode(message));
+  if (action) {
+    const btn = document.createElement('button');
+    btn.className = 'toast-action';
+    btn.textContent = action;
+    btn.addEventListener('click', () => { el.classList.add('hidden'); onAction(); });
+    el.append(btn);
+  }
   el.classList.remove('hidden');
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => el.classList.add('hidden'), ms);
+  toast._t = setTimeout(() => el.classList.add('hidden'), action ? Math.max(ms, 6000) : ms);
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +184,9 @@ async function refreshLibrary() {
   state.setlists = await getSetlists();
   renderSongList();
   renderSetlistList();
+  const trash = await getTrash();
+  $('#btn-open-trash').textContent = `Recently deleted · ${trash.length}`;
+  $('#btn-open-trash').classList.toggle('hidden', !trash.length);
 }
 
 /** A count beside a tab's name, hidden while there is nothing to count. */
@@ -229,11 +259,14 @@ function songMeta(song) {
 function renderSetlistList() {
   setCount('#setlists-count', state.setlists.length);
   $('#setlists-empty').classList.toggle('hidden', state.setlists.length > 0);
+  // A deleted song keeps its place in setlists (restoring it brings it back
+  // there), but it isn't counted while it is gone.
+  const live = new Set(state.songs.map(s => s.id));
   $('#setlist-list').innerHTML = state.setlists.map(sl => `
     <li data-setlist="${esc(sl.id)}">
       <div class="item-main">
         <div class="item-title">${esc(sl.name)}</div>
-        <div class="item-sub">${sl.songIds.length} song${sl.songIds.length === 1 ? '' : 's'}</div>
+        <div class="item-sub">${plural(sl.songIds.filter(id => live.has(id)).length, 'song')}</div>
       </div>
     </li>`).join('');
 }
@@ -251,6 +284,7 @@ async function openSong(id, { push = true } = {}) {
   $('#song-artist').textContent = [song.artist, linesLabel(lyricLineCount(state.parsed))]
     .filter(Boolean).join(' · ');
   syncSongControls();
+  renderHistoryCount(song.id);
   show('song', { push });
 }
 
@@ -301,46 +335,692 @@ function updateSetting(key, value) {
 
 // ---------------------------------------------------------------------------
 // Editor
+//
+// Nothing typed here can be lost by accident. Every change can be undone step
+// by step, and redone; Revert goes back to the saved text and can itself be
+// undone; the status line says as soon as lines go missing; leaving with
+// unsaved changes asks first; and the edit in progress is kept as a draft
+// while typing, so even iOS closing the app loses nothing. Saving files the
+// text it replaces in the song's version history (saveSong in store.js).
 // ---------------------------------------------------------------------------
 
-function openEditor(song) {
-  state.editingId = song ? song.id : null;
-  $('#f-title').value = song ? song.title : '';
-  $('#f-artist').value = song ? song.artist : '';
-  $('#f-key').value = song ? song.key : '';
-  $('#f-body').value = song ? song.body : '';
-  updateFormatBadge();
-  show('editor');
+const COMMON_CHORDS = ['Am', 'Dm', 'Em', 'C', 'D', 'E', 'F', 'G', 'A', 'E7', 'A7', 'D7', 'G7', 'B7', 'Bm'];
+const HEADINGS = {
+  ru: ['Вступление:', 'Куплет:', 'Припев:', 'Проигрыш:', 'Бридж:', 'Соло:', 'Кода:', 'Бой 1', 'Бой 2', 'Бой 3'],
+  en: ['Intro:', 'Verse:', 'Chorus:', 'Bridge:', 'Solo:', 'Outro:'],
+};
+const TYPING_STEP_MS = 900; // a pause this long ends one undo step of typing
+
+/** Same content — the cursor doesn't count. What undo, Revert and "unsaved" compare. */
+const sameForm = (a, b) =>
+  a.text === b.text && a.title === b.title && a.artist === b.artist && a.key === b.key;
+
+/** Non-blank lines of text — chord rows, words, headings: what a slip deletes. */
+const textLines = (text) => text.split('\n').filter(l => l.trim()).length;
+
+const editor = {
+  open: false,
+  songId: null,         // null while writing a new song
+  saved: null,          // the form as last saved: { title, artist, key, text }
+  savedLines: 0,
+  settings: null,       // the song's display settings, for the preview
+  history: new EditHistory({ same: sameForm }),
+  typing: '',           // the typing step in progress: which field, insert or delete
+  typingTimer: null,
+  announced: false,     // the browser said a change is coming (beforeinput)
+  lastState: null,      // the form after the latest change, for changes nobody announced
+  draftTimer: null,
+  hasDraft: false,      // a draft of this edit is stored
+  panel: '',            // the open tool panel
+  preview: false,
+  focusAtTap: null,     // what had focus when the current tap began
+  reloadPending: false, // an app update arrived mid-edit; it waits for the editor to close
+};
+
+/** Everything in the form, with the cursor or selection in the text. */
+function formState() {
+  const ta = $('#f-body');
+  return {
+    text: ta.value, start: ta.selectionStart, end: ta.selectionEnd,
+    title: $('#f-title').value, artist: $('#f-artist').value, key: $('#f-key').value,
+  };
 }
 
-function updateFormatBadge() {
-  const body = $('#f-body').value;
-  $('#format-badge').textContent = body.trim() ? detectFormat(body) : '';
+/** Put a state into the form. Records nothing — callers decide what is a step. */
+function setForm(st) {
+  $('#f-title').value = st.title;
+  $('#f-artist').value = st.artist;
+  $('#f-key').value = st.key;
+  const ta = $('#f-body');
+  if (ta.value !== st.text) ta.value = st.text;
+  ta.setSelectionRange(st.start, st.end);
+}
+
+/**
+ * Scroll the text so the cursor's line shows, even without focus — after an
+ * undo or a tool, the change should be in view. Lines never wrap in the
+ * editor (white-space: pre), so the line's offset is just index × height.
+ */
+function revealCursor() {
+  const ta = $('#f-body');
+  const cs = getComputedStyle(ta);
+  const lh = parseFloat(cs.lineHeight) || 21;
+  const line = ta.value.slice(0, ta.selectionStart).split('\n').length - 1;
+  const top = (parseFloat(cs.paddingTop) || 0) + line * lh;
+  if (top < ta.scrollTop || top + lh > ta.scrollTop + ta.clientHeight) {
+    ta.scrollTop = Math.max(0, top - ta.clientHeight / 3);
+  }
+}
+
+/** Everything that follows a change to the form, however it was made. */
+function afterChange() {
+  const f = formState();
+  editor.lastState = f;
+  const dirty = !sameForm(f, editor.saved);
+  $('#format-badge').textContent = f.text.trim() ? detectFormat(f.text) : '';
+  $('#ed-undo').disabled = !editor.history.canUndo;
+  $('#ed-redo').disabled = !editor.history.canRedo;
+  $('#ed-revert').disabled = !dirty;
+  renderEditStatus(f, dirty);
+  if (editor.panel === 'find') updateFindCount();
+  if (editor.preview) renderPreview();
+  scheduleDraft();
+}
+
+/** "52 lines of text · 2 fewer than saved" — missing lines are the thing to catch. */
+function renderEditStatus(f, dirty) {
+  const n = textLines(f.text);
+  const was = editor.savedLines;
+  let html = `${plural(n, 'line')} of text`;
+  if (editor.songId) {
+    if (n < was) html += ` · <b class="fewer">${was - n} fewer than saved</b>`;
+    else if (n > was) html += ` · ${was === 0 ? 'was empty' : `${n - was} more than saved`}`;
+    else html += dirty ? ' · unsaved changes' : ' · saved';
+  } else if (dirty) {
+    html += ' · not saved yet';
+  }
+  $('#ed-status').innerHTML = html;
+  $('#ed-status-bar').classList.toggle('dirty', dirty);
+  $('#ed-compare').classList.toggle('hidden', !(editor.songId && dirty));
+}
+
+// --- undo steps ---
+
+function endTyping() {
+  clearTimeout(editor.typingTimer);
+  editor.typing = '';
+}
+
+/**
+ * Decide what one undo step is, before the browser changes anything. Typing
+ * groups into steps, as in Word: a run of insertions or deletions in one
+ * field, ended by a pause, a new line, or switching between typing and
+ * deleting. A paste, a cut, an autocorrection, and above all wiping out a
+ * selection — several lines gone at once — are always a step of their own.
+ */
+function beforeFormInput(e) {
+  const type = e.inputType || '';
+  if (type === 'historyUndo') { e.preventDefault(); undo(); return; }
+  if (type === 'historyRedo') { e.preventDefault(); redo(); return; }
+
+  const cur = formState();
+  const kind = type.startsWith('delete') ? 'delete' : 'insert';
+  const ownStep = /^(insertFromPaste|insertFromDrop|insertReplacementText|insertFromYank|deleteByCut)/.test(type)
+    || (e.target.id === 'f-body' && cur.end > cur.start);
+  const step = `${e.target.id}:${kind}`;
+  if (ownStep || editor.typing !== step) editor.history.push(cur);
+  editor.typing = ownStep || type === 'insertParagraph' || type === 'insertLineBreak' ? '' : step;
+  clearTimeout(editor.typingTimer);
+  if (editor.typing) editor.typingTimer = setTimeout(endTyping, TYPING_STEP_MS);
+  // The input event follows within this same task; after that, forget it.
+  editor.announced = true;
+  setTimeout(() => { editor.announced = false; }, 0);
+}
+
+/**
+ * After any change to the form. Some changes arrive without a beforeinput —
+ * dictation, some keyboards and text services — so the step above never
+ * happened; record the form as it was before this change instead, or the
+ * change could not be undone.
+ */
+function onFormInput() {
+  if (!editor.announced && editor.lastState) {
+    endTyping();
+    editor.history.push(editor.lastState);
+  }
+  editor.announced = false;
+  afterChange();
+}
+
+function undo() {
+  endTyping();
+  const prev = editor.history.undo(formState());
+  if (prev) restoreForm(prev);
+  else afterChange();
+}
+
+function redo() {
+  endTyping();
+  const next = editor.history.redo(formState());
+  if (next) restoreForm(next);
+}
+
+function restoreForm(st) {
+  setForm(st);
+  revealCursor();
+  afterChange();
+}
+
+/** Apply a tool's result ({ text, start, end }) as one undoable step. */
+function applyEdit(next) {
+  endTyping();
+  const cur = formState();
+  if (next.text === cur.text) {
+    $('#f-body').setSelectionRange(next.start, next.end);
+    revealCursor();
+    return false;
+  }
+  editor.history.push(cur);
+  restoreForm({ ...cur, text: next.text, start: next.start, end: next.end });
+  return true;
+}
+
+/** A toast whose Undo takes back exactly that action — never something typed after it. */
+function undoToast(message) {
+  const after = formState();
+  toast(message, {
+    action: 'Undo',
+    onAction: () => {
+      if (!editor.open) return;
+      if (sameForm(formState(), after)) undo();
+      else toast('Use ↶ at the top to step back through your changes');
+    },
+  });
+}
+
+/** Back to the text as last saved. Undo brings the edit back. */
+function revertToSaved() {
+  if (!editor.open || sameForm(formState(), editor.saved)) return;
+  endTyping();
+  const cur = formState();
+  editor.history.push(cur);
+  const pos = Math.min(cur.start, editor.saved.text.length);
+  restoreForm({ ...editor.saved, start: pos, end: pos });
+  undoToast(editor.songId ? 'Back to the saved text' : 'Cleared');
+}
+
+/** After a tool runs, give focus back to the text if that is where it was. */
+function refocus() {
+  const ta = $('#f-body');
+  if (editor.focusAtTap === ta && document.activeElement !== ta) ta.focus({ preventScroll: true });
+}
+
+// --- tool panels ---
+
+function togglePanel(name) {
+  const next = editor.panel === name ? '' : name;
+  editor.panel = next;
+  $$('.edit-toolbar [data-panel]').forEach(b => b.setAttribute('aria-expanded', String(b.dataset.panel === next)));
+  for (const p of ['chords', 'lines', 'find']) $('#ed-panel-' + p).classList.toggle('hidden', p !== next);
+  if (next === 'chords') renderChordPalette();
+  if (next === 'find') openFind();
+}
+
+/**
+ * The song's own chords as written, then common ones, then headings. Drawn
+ * when the panel opens and left alone while it is used, so chips never move
+ * under a finger. A song written with H (Russian/German: H7 = B7) gets H in
+ * the common row too.
+ */
+function renderChordPalette() {
+  const text = $('#f-body').value;
+  const mine = chordInventory(parseSong(text), 0, false, true);
+  const usesH = mine.some(c => /^H/.test(c));
+  const common = COMMON_CHORDS.map(c => (usesH ? c.replace(/^B/, 'H') : c));
+  const chip = (c) => `<button class="chip-btn chord keep-focus" data-chord="${esc(c)}">${esc(c)}</button>`;
+  $('#ed-song-chords').innerHTML = mine.length ? mine.map(chip).join('') : '<span class="hint">None yet</span>';
+  $('#ed-common-chords').innerHTML = common.map(chip).join('');
+  const headings = !text.trim() || /[а-яё]/i.test(text) ? HEADINGS.ru : HEADINGS.en;
+  $('#ed-headings').innerHTML = headings
+    .map(h => `<button class="chip-btn keep-focus" data-heading="${esc(h)}">${esc(h)}</button>`).join('');
+}
+
+function insertChordAtCursor(chord) {
+  const cur = formState();
+  applyEdit(insertChord(cur, chord, { chordPro: detectFormat(cur.text) === 'chordpro' }));
+  refocus();
+}
+
+function insertHeading(line) {
+  applyEdit(insertLine(formState(), line));
+  refocus();
+}
+
+function lineTool(kind) {
+  const cur = formState();
+  if (kind === 'duplicate') applyEdit(duplicateLines(cur));
+  else if (kind === 'up') applyEdit(moveLines(cur, -1));
+  else if (kind === 'down') applyEdit(moveLines(cur, 1));
+  else if (kind === 'delete') {
+    const [from, to] = selectedLineRange(cur);
+    const n = cur.text.slice(from, to).split('\n').length;
+    if (applyEdit(deleteLines(cur))) undoToast(n > 1 ? `${n} lines deleted` : 'Line deleted');
+  }
+  refocus();
+}
+
+// --- find & replace ---
+
+const findOpts = () => ({ matchCase: $('#ed-case').checked });
+
+function openFind() {
+  const ta = $('#f-body');
+  const picked = ta.value.slice(ta.selectionStart, ta.selectionEnd);
+  if (picked && !picked.includes('\n') && picked.length <= 40) $('#ed-find').value = picked;
+  $('#ed-find').focus();
+  $('#ed-find').select();
+  updateFindCount();
+}
+
+function updateFindCount() {
+  const q = $('#ed-find').value;
+  const f = formState();
+  const hits = q ? findAll(f.text, q, findOpts()) : [];
+  const at = hits.indexOf(f.start);
+  const onHit = at >= 0 && f.end - f.start === q.length;
+  $('#ed-find-count').textContent = !q ? ''
+    : !hits.length ? 'Not found'
+    : onHit ? `${at + 1} of ${hits.length}`
+    : `${hits.length} found`;
+  for (const id of ['#ed-find-next', '#ed-replace-one', '#ed-replace-all']) $(id).disabled = !hits.length;
+}
+
+/** Select a match in the text. Only a focused textarea shows its selection on an iPhone. */
+function showMatch(start, end) {
+  const ta = $('#f-body');
+  ta.focus({ preventScroll: true });
+  ta.setSelectionRange(start, end);
+  revealCursor();
+  updateFindCount();
+}
+
+function findNextMatch() {
+  const next = findNext(formState(), $('#ed-find').value, findOpts());
+  if (next) showMatch(next.start, next.end);
+  else updateFindCount();
+}
+
+function replaceCurrent() {
+  const q = $('#ed-find').value;
+  if (!q) return;
+  const cur = formState();
+  const next = replaceOne(cur, q, $('#ed-replace').value, findOpts());
+  $('#f-body').focus({ preventScroll: true });
+  if (!applyEdit(next)) showMatch(next.start, next.end);
+  else updateFindCount();
+}
+
+function replaceEverywhere() {
+  const q = $('#ed-find').value;
+  if (!q) return;
+  const cur = formState();
+  const { text, count } = replaceAll(cur.text, q, $('#ed-replace').value, findOpts());
+  if (!count) { updateFindCount(); return; }
+  const pos = Math.min(cur.start, text.length);
+  applyEdit({ text, start: pos, end: pos });
+  undoToast(count === 1 ? 'Replaced 1 match' : `Replaced ${count} matches`);
+}
+
+// --- live preview ---
+
+/** The chart as the player lays it out — same font size and wrapping — chords as written. */
+function setPreview(on) {
+  editor.preview = on;
+  $('#ed-preview').setAttribute('aria-pressed', String(on));
+  $('#view-editor').classList.toggle('previewing', on);
+  $('#ed-preview-pane').classList.toggle('hidden', !on);
+  // The other tools work on the text, which is hidden while previewing.
+  $$('.edit-toolbar [data-panel]').forEach(b => { b.disabled = on; });
+  if (on) {
+    togglePanel('');
+    $('#f-body').blur();
+    renderPreview();
+  }
+}
+
+function renderPreview() {
+  const f = formState();
+  const settings = { ...editor.settings, transpose: 0, capo: 0, accidentals: 'auto', showChords: true };
+  renderChart($('#ed-preview-pane'), parseSong(f.text), settings, { key: f.key, body: f.text });
+}
+
+// --- the draft: survives the app being closed mid-edit ---
+
+function scheduleDraft() {
+  clearTimeout(editor.draftTimer);
+  editor.draftTimer = setTimeout(writeDraft, 600);
+}
+
+/** Store the edit if it differs from the saved song; drop our draft once it doesn't. */
+async function writeDraft() {
+  clearTimeout(editor.draftTimer);
+  if (!editor.open) return;
+  const f = formState();
+  if (sameForm(f, editor.saved)) {
+    if (editor.hasDraft) { editor.hasDraft = false; await clearDraft(); }
+    return;
+  }
+  editor.hasDraft = true;
+  await saveDraft({
+    songId: editor.songId, title: f.title, artist: f.artist, key: f.key, body: f.text,
+    savedAt: new Date().toISOString(),
+  });
+}
+
+/** Offered on launch when the app was closed with an edit unsaved. */
+async function offerDraft() {
+  const draft = await getDraft();
+  if (!draft) return;
+  const song = draft.songId ? await getSong(draft.songId) : null;
+  const lines = plural(textLines(draft.body), 'line');
+  $('#draft-summary').textContent = song
+    ? `Your changes to “${song.title}” from ${when(draft.savedAt)} were not saved: ${lines} of text — the saved song has ${textLines(song.body)}.`
+    : `A new song you were writing${draft.title.trim() ? `, “${draft.title.trim()}”,` : ''} was not saved (${lines} of text, ${when(draft.savedAt)}).`;
+  state.pendingDraft = { draft, song };
+  $('#sheet-draft').classList.remove('hidden');
+}
+
+function continueDraft() {
+  const { draft, song } = state.pendingDraft || {};
+  state.pendingDraft = null;
+  closeSheets();
+  if (!draft) return;
+  openEditor(song, { draft });
+}
+
+async function discardDraft() {
+  const { draft, song } = state.pendingDraft || {};
+  state.pendingDraft = null;
+  closeSheets();
+  await clearDraft();
+  if (draft) toast('Unsaved edit discarded', { action: 'Undo', onAction: () => openEditor(song, { draft }) });
+}
+
+// --- opening, saving and leaving ---
+
+/**
+ * Open the editor on a song (or a blank one). With `draft`, the draft's text
+ * goes in on top of the saved one as an undoable step, so Undo or Revert
+ * shows what was saved.
+ */
+function openEditor(song, { draft = null } = {}) {
+  editor.open = true;
+  editor.songId = song ? song.id : null;
+  editor.saved = song
+    ? { title: song.title, artist: song.artist || '', key: song.key || '', text: song.body }
+    : { title: '', artist: '', key: '', text: '' };
+  editor.savedLines = textLines(editor.saved.text);
+  editor.settings = song ? song.settings : { ...state.prefs.defaults };
+  editor.history.clear();
+  editor.hasDraft = !!draft;
+  endTyping();
+  setForm({ ...editor.saved, start: 0, end: 0 });
+  $('#editor-heading').textContent = song ? 'Edit song' : 'New song';
+  $('#ed-find').value = '';
+  $('#ed-replace').value = '';
+  togglePanel('');
+  setPreview(false);
+  const view = $('#view-editor');
+  view.style.height = '';
+  view.style.transform = '';
+  show('editor');
+  view.querySelector('.scroll-body').scrollTop = 0;
+  $('#f-body').scrollTop = 0;
+  if (draft) {
+    editor.history.push(formState());
+    setForm({ title: draft.title, artist: draft.artist, key: draft.key, text: draft.body, start: 0, end: 0 });
+  }
+  afterChange();
+}
+
+/** Back from the editor: straight out if everything is saved, otherwise ask. */
+function requestCloseEditor() {
+  if (sameForm(formState(), editor.saved)) {
+    if (editor.hasDraft) clearDraft();
+    closeEditor();
+    return;
+  }
+  const n = textLines($('#f-body').value);
+  $('#unsaved-summary').textContent = editor.songId
+    ? `“${editor.saved.title}” has changes that aren't saved — ${plural(n, 'line')} of text now, ${editor.savedLines} when saved.`
+    : 'This new song isn’t saved yet.';
+  $('#sheet-unsaved').classList.remove('hidden');
+}
+
+function leaveEditor() {
+  editor.open = false;
+  clearTimeout(editor.draftTimer);
+  endTyping();
+  editor.history.clear();
+  $('#f-body').blur();
+}
+
+function closeEditor() {
+  const fallback = editor.songId ? 'song' : 'library';
+  leaveEditor();
+  goBack(fallback);
+  if (editor.reloadPending) location.reload();
+}
+
+/** Leave without saving. The text stays in memory a few seconds, behind an Undo. */
+async function discardEdit() {
+  const f = formState();
+  const song = editor.songId ? await getSong(editor.songId) : null;
+  closeSheets();
+  if (editor.hasDraft) await clearDraft();
+  closeEditor();
+  toast('Changes discarded', {
+    action: 'Undo',
+    onAction: () => openEditor(song, { draft: { title: f.title, artist: f.artist, key: f.key, body: f.text } }),
+  });
 }
 
 async function saveFromEditor() {
-  const body = $('#f-body').value;
-  if (!body.trim()) { toast('Add some chords or lyrics first'); return; }
+  const f = formState();
+  if (!f.text.trim()) { closeSheets(); toast('Add some chords or lyrics first'); return; }
 
-  const existing = state.editingId ? await getSong(state.editingId) : null;
-  const parsed = parseSong(body);
+  const existing = editor.songId ? await getSong(editor.songId) : null;
+  const parsed = parseSong(f.text);
   const record = await saveSong({
     ...(existing || {}),
-    id: state.editingId || undefined,
-    title: $('#f-title').value || parsed.meta.title || 'Untitled',
-    artist: $('#f-artist').value || parsed.meta.artist || '',
-    key: $('#f-key').value || parsed.meta.key || '',
+    id: existing ? existing.id : undefined,
+    title: f.title.trim() || parsed.meta.title || 'Untitled',
+    artist: f.artist.trim() || parsed.meta.artist || '',
+    key: f.key.trim() || parsed.meta.key || '',
     format: 'auto',
-    body,
+    body: f.text,
     settings: existing ? existing.settings : { ...state.prefs.defaults },
   });
+  const replaced = existing
+    && (existing.body !== record.body || existing.title !== record.title || existing.artist !== record.artist);
 
+  closeSheets();
+  leaveEditor();
+  await clearDraft();
+  editor.hasDraft = false;
+  if (editor.reloadPending) { location.reload(); return; }
   await refreshLibrary();
   // Opening the editor pushed the view we came from; saving returns there, so
   // drop that entry or Back would land on the song detail twice.
   state.history.pop();
   await openSong(record.id, { push: false });
-  toast('Saved');
+  toast(replaced ? 'Saved · the previous text is in Version history' : 'Saved');
+}
+
+/** The saved text with the lines this edit has lost highlighted — and a way back to it. */
+function openCompare() {
+  const cmp = compareLines(editor.saved.text, $('#f-body').value);
+  historyView = { mode: 'compare' };
+  $('#history-title').textContent = 'Compare with saved';
+  $('#history-detail-summary').textContent = (cmp.onlyHere
+    ? `Highlighted: ${plural(cmp.onlyHere, 'line')} of the saved text that your edit no longer has.`
+    : 'Your edit still has every line of the saved text.')
+    + (cmp.onlyNow ? ` It adds or changes ${plural(cmp.onlyNow, 'line')}.` : '');
+  renderVersionText(cmp.lines);
+  $('#btn-history-restore').textContent = 'Revert to saved text';
+  $('#btn-history-back').textContent = 'Keep editing';
+  $('#history-list-view').classList.add('hidden');
+  $('#history-detail').classList.remove('hidden');
+  $('#sheet-history').classList.remove('hidden');
+}
+
+// ---------------------------------------------------------------------------
+// Version history and Recently deleted
+// ---------------------------------------------------------------------------
+
+const REPLACED_BY = { edit: 'an edit', import: 'an import', restore: 'a restored version' };
+
+/** "today, 14:32", "yesterday, 09:05", "3 Nov, 18:40" — when something happened. */
+function when(iso) {
+  const d = new Date(iso);
+  const now = new Date();
+  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const days = Math.round((new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    - new Date(d.getFullYear(), d.getMonth(), d.getDate())) / 86400000);
+  if (days === 0) return `today, ${time}`;
+  if (days === 1) return `yesterday, ${time}`;
+  const date = d.toLocaleDateString('en-GB', {
+    day: 'numeric', month: 'short', ...(d.getFullYear() === now.getFullYear() ? {} : { year: 'numeric' }),
+  });
+  return `${date}, ${time}`;
+}
+
+let historyView = null; // { mode: 'versions', song, versions, index } or { mode: 'compare' }
+
+/** The line under "Version history" on the song screen. */
+async function renderHistoryCount(id) {
+  const versions = await getVersions(id);
+  if (!state.song || state.song.id !== id) return; // another song opened meanwhile
+  $('#btn-history').disabled = !versions.length;
+  $('#history-count').textContent = versions.length
+    ? `${plural(versions.length, 'earlier version')} · the latest replaced ${when(versions[0].replacedAt)}`
+    : 'None yet. Whenever the words change, the text from before is kept here.';
+}
+
+async function openHistory() {
+  const song = await getSong(state.song.id);
+  if (!song) return;
+  historyView = { mode: 'versions', song, versions: await getVersions(song.id), index: -1 };
+  $('#history-title').textContent = 'Version history';
+  renderHistoryList();
+  $('#sheet-history').classList.remove('hidden');
+}
+
+function renderHistoryList() {
+  const { song, versions } = historyView;
+  $('#history-list-view').classList.remove('hidden');
+  $('#history-detail').classList.add('hidden');
+  $('#history-hint').textContent = versions.length
+    ? 'Newest first. Each one is the text as it was until the time shown, when something replaced it. Tap one to see it.'
+    : 'No earlier versions yet.';
+  $('#history-list').innerHTML = versions.map((v, i) => {
+    const missing = compareLines(v.body, song.body).onlyHere;
+    const sub = [
+      v.title !== song.title ? `“${v.title}”` : '',
+      `${plural(textLines(v.body), 'line')} of text`,
+      missing ? `${missing} not in the current text` : '',
+      `replaced by ${REPLACED_BY[v.reason] || 'an edit'}`,
+    ].filter(Boolean).join(' · ');
+    return `<li data-version="${i}">
+      <div class="item-main">
+        <div class="item-title">Until ${esc(when(v.replacedAt))}</div>
+        <div class="item-sub">${esc(sub)}</div>
+      </div>
+    </li>`;
+  }).join('');
+}
+
+function showVersion(i) {
+  const v = historyView.versions[i];
+  historyView.index = i;
+  const cmp = compareLines(v.body, historyView.song.body);
+  $('#history-detail-summary').textContent = [
+    `The text until ${when(v.replacedAt)}${v.title !== historyView.song.title ? `, titled “${v.title}”` : ''}.`,
+    cmp.onlyHere
+      ? `Highlighted: ${plural(cmp.onlyHere, 'line')} the current text no longer has.`
+      : 'Every line here is still in the current text.',
+  ].join(' ');
+  renderVersionText(cmp.lines);
+  $('#btn-history-restore').textContent = 'Restore this version';
+  $('#btn-history-back').textContent = 'All versions';
+  $('#history-list-view').classList.add('hidden');
+  $('#history-detail').classList.remove('hidden');
+  $('#history-detail-text').scrollTop = 0;
+}
+
+function renderVersionText(lines) {
+  $('#history-detail-text').innerHTML = lines
+    .map(l => `<span class="vl${l.kept ? '' : ' gone'}">${esc(l.line)}</span>`).join('');
+}
+
+/** Make an earlier text current again. What it replaces goes into the history in turn. */
+async function restoreVersion() {
+  const v = historyView.versions[historyView.index];
+  const song = await getSong(historyView.song.id);
+  if (!v || !song) return;
+  await saveSong({ ...song, title: v.title, artist: v.artist, body: v.body }, { reason: 'restore' });
+  closeSheets();
+  await refreshLibrary();
+  await openSong(song.id, { push: false });
+  toast('Version restored · the text it replaced is in Version history');
+}
+
+/** Days until a deleted song is removed for good. */
+const daysLeft = (s) =>
+  Math.max(1, Math.ceil((Date.parse(s.deletedAt) + TRASH_DAYS * 86400000 - Date.now()) / 86400000));
+
+async function renderTrash() {
+  const items = await getTrash();
+  $('#trash-list').innerHTML = items.map(s => `
+    <li class="trash-item">
+      <div class="item-main">
+        <div class="item-title">${esc(s.title)}</div>
+        <div class="item-sub">${esc([s.artist, `deleted ${when(s.deletedAt)}`, `${plural(daysLeft(s), 'day')} left`].filter(Boolean).join(' · '))}</div>
+      </div>
+      <div class="item-actions">
+        <button class="chip-btn" data-trash-restore="${esc(s.id)}">Restore</button>
+        <button class="chip-btn danger" data-trash-purge="${esc(s.id)}">Delete</button>
+      </div>
+    </li>`).join('');
+  return items;
+}
+
+async function openTrash() {
+  if (!(await renderTrash()).length) return;
+  $('#sheet-trash').classList.remove('hidden');
+}
+
+/** After restoring or deleting from Recently deleted: refresh, and close it once empty. */
+async function afterTrashChange() {
+  await refreshLibrary();
+  if (!(await renderTrash()).length) closeSheets();
+}
+
+async function deleteSongToTrash() {
+  const song = state.song;
+  if (!confirm(`Delete “${song.title}”? You can restore it from Recently deleted for ${TRASH_DAYS} days.`)) return;
+  await trashSong(song.id);
+  await refreshLibrary();
+  state.history = [];
+  show('library', { push: false });
+  toast('Moved to Recently deleted', {
+    action: 'Undo',
+    onAction: async () => {
+      await restoreSong(song.id);
+      await refreshLibrary();
+      toast(`Restored “${song.title}”`);
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -468,8 +1148,11 @@ const stripTags = (html) => html.replace(/<[^>]*>/g, '');
 
 function nextInSetlist() {
   if (!state.setlist || state.setlistIndex < 0) return null;
-  const nextId = state.setlist.songIds[state.setlistIndex + 1];
-  return nextId ? state.songs.find(s => s.id === nextId) || null : null;
+  for (const id of state.setlist.songIds.slice(state.setlistIndex + 1)) {
+    const song = state.songs.find(s => s.id === id);
+    if (song) return song; // skipping any that were deleted
+  }
+  return null;
 }
 
 /** Bring the controls up; they hide again after a pause in touching them. */
@@ -760,7 +1443,7 @@ async function runImport() {
     if (!mine) continue; // deleted since the preview was shown
     if (s.status === 'changed' && s.selected) {
       // New words and chords; the player's own settings stay.
-      await saveSong({ ...mine, body: s.body });
+      await saveSong({ ...mine, body: s.body }, { reason: 'import' });
       updated++;
     }
     ids.push(mine.id); // already in the library: still belongs in the setlist
@@ -902,6 +1585,28 @@ async function importLibrary(file) {
   }
 }
 
+/**
+ * Keep the editor's header and tools on screen while the keyboard is up. On
+ * an iPhone the keyboard covers the page instead of shrinking it, and iOS
+ * pans the page to reach the cursor, pushing the toolbar out of sight. The
+ * visual viewport is the part still visible: the editor is sized to it and
+ * moved with it. Ignored while pinch-zoomed, when the viewport is small for
+ * another reason.
+ */
+function fitEditorAboveKeyboard() {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const view = $('#view-editor');
+  const fit = () => {
+    const covered = view.classList.contains('active') && Math.abs(vv.scale - 1) < 0.01
+      && (vv.height < window.innerHeight - 1 || vv.offsetTop > 0);
+    view.style.height = covered ? `${vv.height}px` : '';
+    view.style.transform = covered ? `translateY(${vv.offsetTop}px)` : '';
+  };
+  vv.addEventListener('resize', fit);
+  vv.addEventListener('scroll', fit);
+}
+
 function applyTheme(theme) {
   if (theme === 'auto') document.documentElement.removeAttribute('data-theme');
   else document.documentElement.setAttribute('data-theme', theme);
@@ -963,7 +1668,7 @@ function wire() {
   // --- sheets close from their ✕ or by tapping the dimmed backdrop ---
   $$('[data-close-sheet]').forEach(b => b.addEventListener('click', closeSheets));
   $$('.sheet').forEach(sheet => sheet.addEventListener('click', (e) => {
-    if (e.target === sheet) closeSheets();
+    if (e.target === sheet && !sheet.hasAttribute('data-modal')) closeSheets();
   }));
   $('#search').addEventListener('input', (e) => { state.search = e.target.value; renderSongList(); });
 
@@ -1006,15 +1711,9 @@ function wire() {
   });
 
   // --- back buttons ---
-  $$('[data-back]').forEach(btn => btn.addEventListener('click', () => {
-    const target = state.history.pop() || btn.dataset.back;
-    show(target, { push: false });
-    // Refresh whatever we land on — speed and font can be changed from inside
-    // the player, so the song controls would otherwise show stale values.
-    if (target === 'library') refreshLibrary();
-    else if (target === 'song' && state.song) syncSongControls();
-    else if (target === 'setlist' && state.setlist) renderSetlistDetail();
-  }));
+  // Whatever we land on is refreshed — speed and font can be changed from
+  // inside the player, so the song controls would otherwise show stale values.
+  $$('[data-back]').forEach(btn => btn.addEventListener('click', () => goBack(btn.dataset.back)));
 
   // --- song detail controls ---
   $('#c-speed').addEventListener('input', e => updateSetting('speed', +e.target.value));
@@ -1037,18 +1736,115 @@ function wire() {
   $('#btn-share-song').addEventListener('click', shareSong);
   $('#btn-copy-song').addEventListener('click', copySong);
 
-  $('#btn-delete-song').addEventListener('click', async () => {
-    if (!confirm(`Delete "${state.song.title}"? This cannot be undone.`)) return;
-    await deleteSong(state.song.id);
-    await refreshLibrary();
-    state.history = [];
-    show('library', { push: false });
-    toast('Deleted');
+  $('#btn-delete-song').addEventListener('click', deleteSongToTrash);
+
+  // --- version history and Recently deleted ---
+  $('#btn-history').addEventListener('click', openHistory);
+  $('#history-list').addEventListener('click', (e) => {
+    const li = e.target.closest('[data-version]');
+    if (li) showVersion(+li.dataset.version);
+  });
+  $('#btn-history-restore').addEventListener('click', () => {
+    if (historyView && historyView.mode === 'compare') { closeSheets(); revertToSaved(); }
+    else restoreVersion();
+  });
+  $('#btn-history-back').addEventListener('click', () => {
+    if (historyView && historyView.mode === 'compare') closeSheets();
+    else renderHistoryList();
+  });
+
+  $('#btn-open-trash').addEventListener('click', openTrash);
+  $('#trash-list').addEventListener('click', async (e) => {
+    const restore = e.target.closest('[data-trash-restore]');
+    const purge = e.target.closest('[data-trash-purge]');
+    if (restore) {
+      const song = await restoreSong(restore.dataset.trashRestore);
+      await afterTrashChange();
+      if (song) toast(`Restored “${song.title}”`);
+    } else if (purge) {
+      const title = purge.closest('li').querySelector('.item-title').textContent;
+      if (!confirm(`Delete “${title}” for good? It can't be brought back.`)) return;
+      await purgeSong(purge.dataset.trashPurge);
+      await afterTrashChange();
+      toast('Deleted for good');
+    }
+  });
+  $('#btn-trash-empty').addEventListener('click', async () => {
+    const items = await getTrash();
+    if (!items.length) return;
+    if (!confirm(`Delete ${plural(items.length, 'song')} for good? They can't be brought back.`)) return;
+    for (const s of items) await purgeSong(s.id);
+    await afterTrashChange();
+    toast('Recently deleted is empty');
   });
 
   // --- editor ---
-  $('#f-body').addEventListener('input', updateFormatBadge);
+  // Tool buttons are .keep-focus: pressing one must not take focus from the
+  // text, or the iPhone keyboard would drop and bounce back on every tap.
+  document.addEventListener('pointerdown', (e) => {
+    editor.focusAtTap = document.activeElement;
+    if (e.target.closest && e.target.closest('.keep-focus')) e.preventDefault();
+  });
+  document.addEventListener('mousedown', (e) => {
+    if (e.target.closest && e.target.closest('.keep-focus')) e.preventDefault();
+  });
+
+  for (const sel of ['#f-title', '#f-artist', '#f-key', '#f-body']) {
+    $(sel).addEventListener('beforeinput', beforeFormInput);
+    $(sel).addEventListener('input', onFormInput);
+  }
+  document.addEventListener('keydown', (e) => {
+    if (!editor.open || !(e.ctrlKey || e.metaKey) || e.altKey) return;
+    if (!$('#view-editor').classList.contains('active') || $$('.sheet:not(.hidden)').length) return;
+    const k = e.key.toLowerCase();
+    // By letter, or by key position for other layouts (Ctrl+Я is Ctrl+Z).
+    const is = (letter) => k === letter || e.code === `Key${letter.toUpperCase()}`;
+    // In the find and replace boxes, undo belongs to what is typed there.
+    if ((is('z') || is('y')) && e.target.closest && e.target.closest('#ed-panel-find')) return;
+    if (is('z') && !e.shiftKey) { e.preventDefault(); undo(); }
+    else if ((is('z') && e.shiftKey) || is('y')) { e.preventDefault(); redo(); }
+    else if (is('s')) { e.preventDefault(); saveFromEditor(); }
+    else if (is('f') && !editor.preview) {
+      e.preventDefault();
+      if (editor.panel === 'find') openFind(); else togglePanel('find');
+    }
+  });
+
+  $('#btn-editor-back').addEventListener('click', requestCloseEditor);
   $('#btn-save-song').addEventListener('click', saveFromEditor);
+  $('#ed-undo').addEventListener('click', () => { undo(); refocus(); });
+  $('#ed-redo').addEventListener('click', () => { redo(); refocus(); });
+  $('#ed-revert').addEventListener('click', () => { revertToSaved(); refocus(); });
+  $('#ed-compare').addEventListener('click', openCompare);
+  $('#ed-preview').addEventListener('click', () => setPreview(!editor.preview));
+  $$('.edit-toolbar [data-panel]').forEach(b => b.addEventListener('click', () => {
+    togglePanel(b.dataset.panel);
+    if (b.classList.contains('keep-focus')) refocus();
+  }));
+  $('#ed-panel-chords').addEventListener('click', (e) => {
+    const chord = e.target.closest('[data-chord]');
+    const heading = e.target.closest('[data-heading]');
+    if (chord) insertChordAtCursor(chord.dataset.chord);
+    else if (heading) insertHeading(heading.dataset.heading);
+  });
+  $('#ed-panel-lines').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-line]');
+    if (b) lineTool(b.dataset.line);
+  });
+  $('#ed-find').addEventListener('input', updateFindCount);
+  $('#ed-find').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); findNextMatch(); }
+  });
+  $('#ed-case').addEventListener('change', updateFindCount);
+  $('#ed-find-next').addEventListener('click', findNextMatch);
+  $('#ed-replace-one').addEventListener('click', replaceCurrent);
+  $('#ed-replace-all').addEventListener('click', replaceEverywhere);
+
+  $('#btn-unsaved-save').addEventListener('click', saveFromEditor);
+  $('#btn-unsaved-discard').addEventListener('click', discardEdit);
+  $('#btn-unsaved-keep').addEventListener('click', closeSheets);
+  $('#btn-draft-restore').addEventListener('click', continueDraft);
+  $('#btn-draft-discard').addEventListener('click', discardDraft);
 
   // --- setlist detail ---
   $('#setlist-songs').addEventListener('click', async (e) => {
@@ -1203,8 +1999,16 @@ async function init() {
   applyTheme(state.prefs.theme || 'auto');
 
   wire();
+  fitEditorAboveKeyboard();
   await refreshLibrary();
   requestPersistence();
+  await offerDraft();
+
+  // iOS may close a backgrounded app without warning: store the edit now
+  // rather than when the typing pause ends.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden' && editor.open) writeDraft();
+  });
 
   if ('serviceWorker' in navigator) {
     // A new service worker calls skipWaiting and claims this page, but the JS
@@ -1214,6 +2018,8 @@ async function init() {
     let reloading = false;
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (!hadController || reloading) return; // first install: nothing to replace
+      // Never mid-edit: the reload waits until the editor is closed.
+      if (editor.open) { editor.reloadPending = true; return; }
       reloading = true;
       location.reload();
     });

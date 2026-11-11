@@ -7,10 +7,15 @@
 // title. Changing it opens a different, empty database and every song already
 // saved on the device becomes unreachable.
 const DB_NAME = 'songs-scroll';
-const DB_VERSION = 1;
+const DB_VERSION = 2; // 2 added version history and Recently deleted
 const SONGS = 'songs';
 const SETLISTS = 'setlists';
 const PREFS = 'prefs';
+const VERSIONS = 'versions';
+const TRASH = 'trash';
+
+const KEEP_VERSIONS = 30;    // per song
+export const TRASH_DAYS = 30;
 
 export const DEFAULT_SETTINGS = {
   speed: 28,          // px per second
@@ -29,16 +34,42 @@ function openDb() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
+    // Upgrades only ever add stores: songs, setlists and settings already on
+    // the phone are left exactly as they are.
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(SONGS)) db.createObjectStore(SONGS, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(SETLISTS)) db.createObjectStore(SETLISTS, { keyPath: 'id' });
       if (!db.objectStoreNames.contains(PREFS)) db.createObjectStore(PREFS, { keyPath: 'k' });
+      if (!db.objectStoreNames.contains(VERSIONS)) {
+        db.createObjectStore(VERSIONS, { keyPath: 'id' }).createIndex('bySong', 'songId');
+      }
+      if (!db.objectStoreNames.contains(TRASH)) db.createObjectStore(TRASH, { keyPath: 'id' });
     };
-    req.onsuccess = () => resolve(req.result);
+    req.onsuccess = () => {
+      const db = req.result;
+      // If a newer version of the app needs to upgrade, step aside for it.
+      db.onversionchange = () => db.close();
+      resolve(db);
+    };
     req.onerror = () => reject(req.error);
   });
   return dbPromise;
+}
+
+/**
+ * One transaction across several stores. `fn` gets the transaction and a
+ * `done(value)` to report a result; the promise resolves once it commits.
+ */
+function run(stores, mode, fn) {
+  return openDb().then(db => new Promise((resolve, reject) => {
+    const t = db.transaction(stores, mode);
+    let result;
+    fn(t, (value) => { result = value; });
+    t.oncomplete = () => resolve(result);
+    t.onerror = () => reject(t.error);
+    t.onabort = () => reject(t.error);
+  }));
 }
 
 function tx(store, mode, fn) {
@@ -62,9 +93,15 @@ export function newId() {
 
 export const getSongs = () => tx(SONGS, 'readonly', s => s.getAll()).then(sortByTitle);
 export const getSong = (id) => tx(SONGS, 'readonly', s => s.get(id));
-export const deleteSong = (id) => tx(SONGS, 'readwrite', s => s.delete(id));
 
-export function saveSong(song) {
+/**
+ * Save a song. When its words, title or artist change, the text it had until
+ * now goes into its version history first, in the same transaction — so no
+ * way of changing a song (editing, an import, restoring a version) can lose
+ * the previous text. `reason` records what replaced it: 'edit', 'import' or
+ * 'restore'. Only the newest KEEP_VERSIONS per song are kept.
+ */
+export function saveSong(song, { reason = 'edit' } = {}) {
   const now = new Date().toISOString();
   const record = {
     id: song.id || newId(),
@@ -77,8 +114,120 @@ export function saveSong(song) {
     createdAt: song.createdAt || now,
     updatedAt: now,
   };
-  return tx(SONGS, 'readwrite', s => s.put(record)).then(() => record);
+  return run([SONGS, VERSIONS], 'readwrite', (t) => {
+    const songs = t.objectStore(SONGS);
+    const versions = t.objectStore(VERSIONS);
+    const req = songs.get(record.id);
+    req.onsuccess = () => {
+      const old = req.result;
+      if (old && (old.body !== record.body || old.title !== record.title || old.artist !== record.artist)) {
+        versions.put({
+          id: newId(), songId: old.id, title: old.title, artist: old.artist,
+          body: old.body, replacedAt: now, reason,
+        });
+        const all = versions.index('bySong').getAll(old.id);
+        all.onsuccess = () => {
+          all.result
+            .sort((a, b) => b.replacedAt.localeCompare(a.replacedAt))
+            .slice(KEEP_VERSIONS)
+            .forEach((v) => versions.delete(v.id));
+        };
+      }
+      songs.put(record);
+    };
+  }).then(() => record);
 }
+
+/** A song's earlier texts, newest first. */
+export function getVersions(songId) {
+  return run([VERSIONS], 'readonly', (t, done) => {
+    const r = t.objectStore(VERSIONS).index('bySong').getAll(songId);
+    r.onsuccess = () => done(r.result.sort((a, b) => b.replacedAt.localeCompare(a.replacedAt)));
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Recently deleted
+//
+// Deleting a song moves it here for TRASH_DAYS; its history stays with it,
+// and setlists keep its place, so a restore brings everything back.
+// ---------------------------------------------------------------------------
+
+export function trashSong(id) {
+  return run([SONGS, TRASH], 'readwrite', (t, done) => {
+    const r = t.objectStore(SONGS).get(id);
+    r.onsuccess = () => {
+      if (!r.result) return;
+      const item = { ...r.result, deletedAt: new Date().toISOString() };
+      t.objectStore(TRASH).put(item);
+      t.objectStore(SONGS).delete(id);
+      done(item);
+    };
+  });
+}
+
+export function restoreSong(id) {
+  return run([SONGS, TRASH, VERSIONS], 'readwrite', (t, done) => {
+    const r = t.objectStore(TRASH).get(id);
+    r.onsuccess = () => {
+      if (!r.result) return;
+      const { deletedAt, ...song } = r.result;
+      const songs = t.objectStore(SONGS);
+      const live = songs.get(id);
+      live.onsuccess = () => {
+        t.objectStore(TRASH).delete(id);
+        if (!live.result) { songs.put(song); done(song); return; }
+        // Already back in the library — a backup brought it back. Keep that
+        // copy, and file the deleted text in its history so nothing is lost.
+        if (live.result.body !== song.body) {
+          t.objectStore(VERSIONS).put({
+            id: newId(), songId: id, title: song.title, artist: song.artist,
+            body: song.body, replacedAt: deletedAt, reason: 'restore',
+          });
+        }
+        done(live.result);
+      };
+    };
+  });
+}
+
+/** Delete for good: the song and its whole history. */
+export function purgeSong(id) {
+  return run([TRASH, SONGS, VERSIONS], 'readwrite', (t) => {
+    t.objectStore(TRASH).delete(id);
+    const live = t.objectStore(SONGS).count(id);
+    live.onsuccess = () => {
+      if (live.result) return; // back in the library (from a backup): its history stays
+      const versions = t.objectStore(VERSIONS);
+      const keys = versions.index('bySong').getAllKeys(id);
+      keys.onsuccess = () => keys.result.forEach((k) => versions.delete(k));
+    };
+  });
+}
+
+/** Recently deleted, newest first. Anything past TRASH_DAYS is removed for good on the way. */
+export async function getTrash() {
+  const items = await run([TRASH], 'readonly', (t, done) => {
+    const r = t.objectStore(TRASH).getAll();
+    r.onsuccess = () => done(r.result);
+  });
+  const cutoff = Date.now() - TRASH_DAYS * 86400000;
+  for (const s of items) if (Date.parse(s.deletedAt) < cutoff) await purgeSong(s.id);
+  return items
+    .filter((s) => Date.parse(s.deletedAt) >= cutoff)
+    .sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
+}
+
+// ---------------------------------------------------------------------------
+// The edit in progress
+//
+// Saved as the user types, so switching apps — or iOS closing the app —
+// loses nothing. Kept apart from preferences, which go into backups.
+// ---------------------------------------------------------------------------
+
+export const getDraft = () => tx(PREFS, 'readonly', s => s.get('draft')).then(r => (r ? r.v : null));
+export const saveDraft = (draft) => tx(PREFS, 'readwrite', s => s.put({ k: 'draft', v: draft }));
+export const clearDraft = () => tx(PREFS, 'readwrite', s => s.delete('draft'));
 
 function sortByTitle(list) {
   return (list || []).sort((a, b) =>
@@ -184,7 +333,7 @@ export async function importAll(data, mode = 'merge') {
   for (const song of data.songs) {
     if (!song || !song.body) continue;
     if (existing.has(song.id)) updated++; else added++;
-    await saveSong({ ...song, id: song.id || newId() });
+    await saveSong({ ...song, id: song.id || newId() }, { reason: 'import' });
   }
 
   let sets = 0;
